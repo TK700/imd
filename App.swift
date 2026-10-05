@@ -807,7 +807,7 @@ final class SnippetPanel: NSPanel {
     private var rowButtons: [NSButton] = []
 
     override func sendEvent(_ e: NSEvent) {
-        if e.type == .scrollWheel { scrollBy(e.scrollingDeltaY); return }
+        if e.type == .scrollWheel { scroll.scrollWheel(with: e); return }
         super.sendEvent(e)
     }
 
