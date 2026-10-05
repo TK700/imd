@@ -33,6 +33,11 @@ struct SearchSel: Equatable {
     let range: NSRange
 }
 
+struct CaretRequest: Equatable {
+    let id = UUID()
+    let location: Int
+}
+
 struct MDDoc: Identifiable {
     let id = UUID()
     var text: String
@@ -58,10 +63,14 @@ final class EditorController: ObservableObject {
     @Published var matchRanges: [NSRange] = []
     @Published var matchIndex = -1
     @Published var searchSelection: SearchSel? = nil
+    @Published var caretRequest: CaretRequest? = nil
     @Published var lastReplaceCount = 0
     @Published var requestedTab: ActiveTab? = nil
 
     private let recentKey = "recentFiles"
+    private var undoStacks: [UUID: [String]] = [:]
+    private var redoStacks: [UUID: [String]] = [:]
+    private var lastEditTime = Date.distantPast
 
     init() { loadRecent() }
 
@@ -90,6 +99,8 @@ final class EditorController: ObservableObject {
         if let idx = docs.firstIndex(where: { $0.fileURL == url }) {
             docs[idx].text = s
             docs[idx].dirty = false
+            undoStacks[docs[idx].id] = []
+            redoStacks[docs[idx].id] = []
             active = idx
         } else {
             var d = MDDoc(text: s, fileURL: url)
@@ -112,6 +123,7 @@ final class EditorController: ObservableObject {
         d.blocks = b
         docs.append(d)
         active = docs.count - 1
+        if !asTxt { requestedTab = .source }
     }
 
     func newDocDialog() {
@@ -130,7 +142,10 @@ final class EditorController: ObservableObject {
 
     func closeDoc(at idx: Int) {
         guard docs.indices.contains(idx) else { return }
+        let id = docs[idx].id
         docs.remove(at: idx)
+        undoStacks[id] = nil
+        redoStacks[id] = nil
         if docs.isEmpty { active = 0 }
         else if active >= docs.count { active = docs.count - 1 }
         else if active > idx { active -= 1 }
@@ -143,15 +158,73 @@ final class EditorController: ObservableObject {
         }
     }
 
-    func setText(_ s: String) {
+    func setText(_ s: String, newGroup: Bool = false) {
         guard docs.indices.contains(active) else { return }
         if docs[active].text == s { return }
+        recordUndo(old: docs[active].text, new: s, newGroup: newGroup)
+        commit(s)
+    }
+
+    private func commit(_ s: String) {
         docs[active].text = s
         docs[active].dirty = true
         let (h, b) = parseDocument(s)
         docs[active].headings = h
         docs[active].blocks = b
         recomputeMatches()
+    }
+
+    private func recordUndo(old: String, new: String, newGroup: Bool) {
+        let id = docs[active].id
+        var stack = undoStacks[id] ?? []
+        let typing = abs((new as NSString).length - (old as NSString).length) <= 1
+        let grouped = !newGroup && typing && !stack.isEmpty
+            && Date().timeIntervalSince(lastEditTime) < 0.8
+        if !grouped {
+            stack.append(old)
+            if stack.count > 200 { stack.removeFirst(stack.count - 200) }
+            undoStacks[id] = stack
+            redoStacks[id] = []
+        }
+        lastEditTime = Date()
+    }
+
+    var canUndo: Bool { activeDoc.map { !(undoStacks[$0.id] ?? []).isEmpty } ?? false }
+    var canRedo: Bool { activeDoc.map { !(redoStacks[$0.id] ?? []).isEmpty } ?? false }
+
+    func undo() {
+        guard let id = activeDoc?.id, var stack = undoStacks[id], let prev = stack.popLast() else {
+            NSSound.beep(); return
+        }
+        undoStacks[id] = stack
+        var redo = redoStacks[id] ?? []
+        redo.append(docs[active].text)
+        redoStacks[id] = redo
+        lastEditTime = .distantPast
+        commit(prev)
+    }
+
+    func redo() {
+        guard let id = activeDoc?.id, var stack = redoStacks[id], let next = stack.popLast() else {
+            NSSound.beep(); return
+        }
+        redoStacks[id] = stack
+        var undo = undoStacks[id] ?? []
+        undo.append(docs[active].text)
+        undoStacks[id] = undo
+        lastEditTime = .distantPast
+        let old = docs[active].text
+        commit(next)
+        caretRequest = CaretRequest(location: changedRegionEnd(old: old, new: next))
+    }
+
+    private func changedRegionEnd(old: String, new: String) -> Int {
+        let o = Array(old.utf16), n = Array(new.utf16)
+        var p = 0
+        while p < o.count, p < n.count, o[p] == n[p] { p += 1 }
+        var s = 0
+        while s < o.count - p, s < n.count - p, o[o.count - 1 - s] == n[n.count - 1 - s] { s += 1 }
+        return n.count - s
     }
 
     func reparseActive() {
@@ -191,6 +264,41 @@ final class EditorController: ObservableObject {
                 pushRecent(url)
             } catch { NSSound.beep() }
         }
+    }
+
+    func toggleTask(index: Int, checked: Bool) {
+        var lines = activeText.components(separatedBy: "\n")
+        var count = 0
+        guard let re = try? NSRegularExpression(pattern: "^(\\s*[-*+]\\s+\\[)([ xX])(\\])") else { return }
+        for i in lines.indices {
+            let ns = lines[i] as NSString
+            if let m = re.firstMatch(in: lines[i], range: NSRange(location: 0, length: ns.length)) {
+                if count == index {
+                    lines[i] = ns.replacingCharacters(in: m.range(at: 2), with: checked ? "x" : " ")
+                    setText(lines.joined(separator: "\n"))
+                    return
+                }
+                count += 1
+            }
+        }
+    }
+
+    func renumberOrderedLists() {
+        var lines = activeText.components(separatedBy: "\n")
+        var counter = 0
+        guard let re = try? NSRegularExpression(pattern: "^(\\s*)(\\d+)\\.\\s") else { return }
+        for i in lines.indices {
+            let ns = lines[i] as NSString
+            if let m = re.firstMatch(in: lines[i], range: NSRange(location: 0, length: ns.length)) {
+                counter += 1
+                let indent = ns.substring(with: m.range(at: 1))
+                let rest = ns.substring(from: m.range.location + m.range.length)
+                lines[i] = indent + "\(counter). " + rest
+            } else {
+                if !lines[i].trimmingCharacters(in: .whitespaces).isEmpty { counter = 0 }
+            }
+        }
+        setText(lines.joined(separator: "\n"))
     }
 
     func jump(to heading: Heading) {
@@ -248,7 +356,7 @@ final class EditorController: ObservableObject {
         guard matchIndex >= 0, matchIndex < matchRanges.count else { return }
         let r = matchRanges[matchIndex]
         let ns = activeText as NSString
-        setText(ns.replacingCharacters(in: r, with: replaceText))
+        setText(ns.replacingCharacters(in: r, with: replaceText), newGroup: true)
         searchSelection = SearchSel(range: NSRange(location: r.location, length: (replaceText as NSString).length))
     }
 
@@ -259,7 +367,7 @@ final class EditorController: ObservableObject {
             mutable.replaceCharacters(in: r, with: replaceText)
         }
         lastReplaceCount = matchRanges.count
-        setText(mutable as String)
+        setText(mutable as String, newGroup: true)
     }
 
     // MARK: recent
@@ -341,8 +449,7 @@ private let previewCSS = """
 :root { color-scheme: light dark; }
 * { box-sizing: border-box; }
 html, body { margin: 0; padding: 0; background: #ffffff; color: #1d1d1f;
-  font: 16px/1.65 -apple-system, "Helvetica Neue", "PingFang SC", sans-serif;
-  -webkit-font-smoothing: antialiased; }
+  font: 16px/1.65 -apple-system, "Helvetica Neue", "PingFang SC", sans-serif; }
 #content { width: 90%; max-width: 1100px; margin: 0 auto; padding: 28px 0 80px; }
 h1 { font-size: 30px; font-weight: 700; margin: 20px 0 10px; line-height: 1.25; }
 h2 { font-size: 26px; font-weight: 700; margin: 22px 0 10px; line-height: 1.25; }
@@ -365,10 +472,35 @@ blockquote { border-left: 4px solid #d2d2d7; margin: 0 0 12px; padding: 6px 16px
   color: #4a4a4f; background: rgba(0,0,0,0.03); border-radius: 0 6px 6px 0; }
 mark.imd-hl { background: #ffd60a; color: #000; border-radius: 3px; padding: 0 1px; }
 mark.imd-hl.cur { background: #ff3b30; color: #fff; }
+#content ul li.task-item { list-style: none; margin-left: -22px; }
+#content ul li.task-item input[type="checkbox"] {
+  appearance: none; -webkit-appearance: none;
+  width: 16px; height: 16px; margin-right: 8px; vertical-align: -3px;
+  border: 1.5px solid #9a9aa0; border-radius: 4px; background: transparent;
+  cursor: pointer; position: relative; transition: all .15s ease;
+}
+#content ul li.task-item input[type="checkbox"]:hover { border-color: #007aff; }
+#content ul li.task-item input[type="checkbox"]:checked { background: #007aff; border-color: #007aff; }
+#content ul li.task-item input[type="checkbox"]:checked::after {
+  content: ""; position: absolute; left: 4.5px; top: 1.5px;
+  width: 4px; height: 8px; border: solid #fff; border-width: 0 2px 2px 0;
+  transform: rotate(45deg);
+}
+#content ul li.task-item.done { text-decoration: line-through; opacity: 0.55; }
+mark.imd-mark { background: #ffd60a; color: #000; border-radius: 3px; padding: 0 2px; }
+.imd-math { font-family: "Times New Roman", Georgia, serif; font-style: italic; }
+.imd-math-block { text-align: center; margin: 14px 0; padding: 10px; border-radius: 8px;
+  font-family: "Times New Roman", Georgia, serif; font-style: italic; font-size: 17px;
+  background: rgba(0,0,0,0.03); }
+.imd-footnotes { font-size: 13px; color: #6e6e73; }
+.imd-footnotes hr { margin: 24px 0 8px; }
+.imd-footnotes ol { padding-left: 20px; }
+sup.imd-fnref { font-size: 11px; }
 table { border-collapse: collapse; width: 100%; margin: 0 0 14px; font-size: 14px; display: block; overflow-x: auto; }
 th, td { border: 1px solid #d2d2d7; padding: 7px 12px; text-align: left; }
 th { background: rgba(0,0,0,0.04); font-weight: 600; }
 @media (prefers-color-scheme: dark) {
+  html { background: #1d1d1f; }
   body { background: #1d1d1f; color: #e8e8ea; }
   a { color: #4ea2ff; }
   h6 { color: #8e8e93; }
@@ -377,6 +509,8 @@ th { background: rgba(0,0,0,0.04); font-weight: 600; }
   pre { background: #161617; }
   pre code { color: #e8e8ea; }
   blockquote { border-color: #3a3a3c; color: #b0b0b5; background: rgba(255,255,255,0.04); }
+  .imd-math-block { background: rgba(255,255,255,0.05); }
+  .imd-footnotes { color: #98989d; }
   th, td { border-color: #3a3a3c; }
   th { background: rgba(255,255,255,0.06); }
 }
@@ -395,7 +529,54 @@ private func shellHTML() -> String {
 </head><body><div id="content"></div>
 <script>
 marked.setOptions({ gfm: true, breaks: true });
-function renderMd(md){ var el=document.getElementById('content'); try { el.innerHTML = marked.parse(md); } catch(e){ el.textContent = String(e); } }
+marked.use({ extensions: [{
+  name: 'imdHl',
+  level: 'inline',
+  start: function(src){ var i = src.indexOf('=='); return i === -1 ? undefined : i; },
+  tokenizer: function(src){
+    var m = /^==([^=\\n]+)==/.exec(src);
+    if (m) { return { type: 'imdHl', raw: m[0], tokens: this.lexer.inlineTokens(m[1]) }; }
+  },
+  renderer: function(tok){ return '<mark class="imd-mark">' + this.parser.parseInline(tok.tokens) + '</mark>'; }
+}] });
+function imdEsc(s){ return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+function renderMd(md){
+  var el=document.getElementById('content');
+  try {
+    md = md.replace(/\\$\\$([\\s\\S]+?)\\$\\$/g, function(m,c){ return '\\n<div class="imd-math-block">'+imdEsc(c.trim())+'</div>\\n'; });
+    md = md.replace(/\\$([^$\\n]+)\\$/g, function(m,c){ return '<span class="imd-math">'+imdEsc(c)+'</span>'; });
+    var defs={}; var order=[];
+    md = md.replace(/^\\[\\^([^\\]]+)\\]:\\s*(.+)$/gm, function(m,id,txt){ defs[id]=txt; return ''; });
+    md = md.replace(/\\[\\^([^\\]]+)\\]/g, function(m,id){
+      if(!(id in defs)) return m;
+      var i=order.indexOf(id); if(i===-1){ order.push(id); i=order.length-1; }
+      return '<sup id="imd-fnref-'+i+'" class="imd-fnref"><a href="#imd-fn-'+i+'">['+(i+1)+']</a></sup>';
+    });
+    var html = marked.parse(md);
+    if(order.length){
+      var lis=order.map(function(id,i){ return '<li id="imd-fn-'+i+'">'+marked.parseInline(defs[id])+' <a href="#imd-fnref-'+i+'">↩</a></li>'; }).join('');
+      html += '<section class="imd-footnotes"><hr><ol>'+lis+'</ol></section>';
+    }
+    el.innerHTML = html;
+    enhanceTasks();
+  } catch(e){ el.textContent = String(e); }
+}
+function enhanceTasks(){
+  var idx = 0;
+  document.querySelectorAll('#content li').forEach(function(li){
+    var cb = li.querySelector('input[type="checkbox"]');
+    if(!cb) return;
+    li.classList.add('task-item');
+    cb.disabled = false;
+    if(cb.checked) li.classList.add('done');
+    cb.setAttribute('data-task-index', idx);
+    cb.onchange = function(){
+      li.classList.toggle('done', cb.checked);
+      window.webkit.messageHandlers.taskToggle.postMessage({ index: idx, checked: cb.checked });
+    };
+    idx++;
+  });
+}
 function scrollToHeading(i){ var hs=document.querySelectorAll('h1,h2,h3,h4,h5,h6'); if(hs[i]){ hs[i].scrollIntoView({behavior:'smooth', block:'start'}); } }
 function findOccurrences(text, term, cs){
   var res=[];
@@ -459,10 +640,12 @@ struct PreviewView: NSViewRepresentable {
     @EnvironmentObject var controller: EditorController
     let text: String
 
-    func makeCoordinator() -> Coordinator { Coordinator() }
+    func makeCoordinator() -> Coordinator { Coordinator(controller: controller) }
 
     func makeNSView(context: Context) -> WKWebView {
-        let web = WKWebView(frame: .zero)
+        let cfg = WKWebViewConfiguration()
+        cfg.userContentController.add(context.coordinator, name: "taskToggle")
+        let web = WKWebView(frame: .zero, configuration: cfg)
         web.navigationDelegate = context.coordinator
         context.coordinator.webView = web
         web.loadHTMLString(shellHTML(), baseURL: nil)
@@ -504,7 +687,8 @@ struct PreviewView: NSViewRepresentable {
         }
     }
 
-    final class Coordinator: NSObject, WKNavigationDelegate {
+    final class Coordinator: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
+        let controller: EditorController
         weak var webView: WKWebView?
         var ready = false
         var pendingText: String? = nil
@@ -515,6 +699,8 @@ struct PreviewView: NSViewRepresentable {
         var lastCase: Bool? = nil
         var lastShow: Bool? = nil
 
+        init(controller: EditorController) { self.controller = controller }
+
         func webView(_ w: WKWebView, didFinish navigation: WKNavigation!) {
             ready = true
             if let p = pendingText {
@@ -523,27 +709,195 @@ struct PreviewView: NSViewRepresentable {
                 pendingText = nil
             }
         }
+
+        func userContentController(_ uc: WKUserContentController, didReceive msg: WKScriptMessage) {
+            guard msg.name == "taskToggle",
+                  let body = msg.body as? [String: Any],
+                  let idx = body["index"] as? Int,
+                  let checked = body["checked"] as? Bool else { return }
+            controller.toggleTask(index: idx, checked: checked)
+        }
     }
 }
 
 // MARK: - Source editor
+
+final class NoUndoTextView: NSTextView {
+    override var undoManager: UndoManager? { nil }
+
+    override var rangeForUserCompletion: NSRange {
+        let caret = selectedRange().location
+        let ns = string as NSString
+        let r = ns.range(of: "\n", options: .backwards, range: NSRange(location: 0, length: caret))
+        let start = r.location == NSNotFound ? 0 : r.location + 1
+        return NSRange(location: start, length: caret - start)
+    }
+}
+
+private let mdSnippets: [(key: String, value: String, desc: String)] = [
+    ("#", "# ", "snip.h1"),
+    ("##", "## ", "snip.h2"),
+    ("###", "### ", "snip.h3"),
+    ("####", "#### ", "snip.h4"),
+    ("#####", "##### ", "snip.h5"),
+    ("######", "###### ", "snip.h6"),
+    (">", "> ", "snip.quote"),
+    ("-", "- ", "snip.ul"),
+    ("- [", "- [ ] ", "snip.task"),
+    ("1.", "1. ", "snip.ol"),
+    ("[", "[文本](url)", "snip.link"),
+    ("![", "![描述](url)", "snip.image"),
+    ("`", "`代码`", "snip.code"),
+    ("```", "```swift\n\n```\n", "snip.codeblock"),
+    ("**", "**粗体**", "snip.bold"),
+    ("*", "*斜体*", "snip.italic"),
+    ("~~", "~~删除线~~", "snip.strike"),
+    ("==", "==高亮==", "snip.mark"),
+    ("[^", "[^1]", "snip.footnote"),
+    ("$$", "$$\n公式\n$$\n", "snip.mathblock"),
+    ("$", "$公式$", "snip.math"),
+    ("|", "| 列1 | 列2 | 列3 |\n| --- | --- | --- |\n|  |  |  |\n", "snip.table"),
+    ("---", "---\n", "snip.hr"),
+]
+
+// MARK: - Snippet panel (non-blocking)
+
+final class FlippedView: NSView {
+    override var isFlipped: Bool { true }
+}
+
+final class SnippetPanel: NSPanel {
+    private let host = NSVisualEffectView()
+    private let scroll = NSScrollView()
+    private let container = FlippedView()
+    var onSelect: ((Int) -> Void)?
+    private var panelWidth: CGFloat = 360
+    private let rowH: CGFloat = 26
+    private let maxVisible: CGFloat = 320
+
+    init() {
+        super.init(contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+        isFloatingPanel = true
+        becomesKeyOnlyIfNeeded = true
+        level = .floating
+        hasShadow = true
+        isOpaque = false
+        backgroundColor = .clear
+        hidesOnDeactivate = false
+        host.material = .menu
+        host.state = .active
+        scroll.drawsBackground = false
+        scroll.hasVerticalScroller = true
+        scroll.autohidesScrollers = true
+        scroll.documentView = container
+        host.addSubview(scroll)
+        contentView = host
+    }
+    required init?(coder: NSCoder) { fatalError() }
+
+    func scrollBy(_ dy: CGFloat) {
+        let clip = scroll.contentView
+        var o = clip.bounds.origin
+        let maxY = max(0, container.bounds.height - clip.bounds.height)
+        o.y = min(max(o.y - dy, 0), maxY)
+        clip.setBoundsOrigin(o)
+    }
+
+    private var selected = 0
+    private var rowButtons: [NSButton] = []
+
+    override func sendEvent(_ e: NSEvent) {
+        if e.type == .scrollWheel { scrollBy(e.scrollingDeltaY); return }
+        super.sendEvent(e)
+    }
+
+    private func applyHighlight() {
+        let hi = selected
+        for (i, b) in rowButtons.enumerated() {
+            b.wantsLayer = true
+            b.layer?.backgroundColor = (i == hi)
+                ? NSColor.controlAccentColor.withAlphaComponent(0.22).cgColor
+                : nil
+        }
+        scrollToSelected()
+    }
+    private func scrollToSelected() {
+        guard selected < rowButtons.count else { return }
+        let rowRect = NSRect(x: 0, y: 6 + CGFloat(selected) * rowH, width: panelWidth, height: rowH)
+        scroll.contentView.scrollToVisible(rowRect)
+        scroll.reflectScrolledClipView(scroll.contentView)
+    }
+    func selectNext() { guard !rowButtons.isEmpty else { return }; selected = (selected + 1) % rowButtons.count; applyHighlight() }
+    func selectPrev() { guard !rowButtons.isEmpty else { return }; selected = (selected - 1 + rowButtons.count) % rowButtons.count; applyHighlight() }
+    func insertCurrent() { onSelect?(selected) }
+
+    func show(candidates: [(sym: String, desc: String)], at screenPoint: NSPoint, select: @escaping (Int) -> Void) {
+        onSelect = select
+        selected = 0
+        container.subviews.forEach { $0.removeFromSuperview() }
+        rowButtons = []
+
+        // 量最宽行, 面板宽 = 内容宽 * 1.3, 夹在 [220, 屏宽*0.8]
+        let mono = NSFont.monospacedSystemFont(ofSize: 13, weight: .semibold)
+        let sys = NSFont.systemFont(ofSize: 12)
+        var maxW: CGFloat = 0
+        for c in candidates {
+            let symW = (c.sym.replacingOccurrences(of: "\n", with: "⏎") as NSString).size(withAttributes: [.font: mono]).width
+            let descW = (("   " + c.desc) as NSString).size(withAttributes: [.font: sys]).width
+            maxW = max(maxW, symW + descW)
+        }
+        let screenW = NSScreen.main?.visibleFrame.width ?? 800
+        panelWidth = min(max(maxW * 1.3 + 24, 220), screenW * 0.8)
+
+        let totalH = CGFloat(candidates.count) * rowH + 12
+        let visibleH = min(totalH, maxVisible)
+        container.frame = NSRect(x: 0, y: 0, width: panelWidth, height: totalH)
+        scroll.frame = NSRect(x: 0, y: 0, width: panelWidth, height: visibleH)
+        for (i, c) in candidates.enumerated() {
+            let b = NSButton()
+            b.bezelStyle = .regularSquare
+            b.isBordered = false
+            b.alignment = .left
+            b.tag = i
+            b.target = self
+            b.action = #selector(rowClick(_:))
+            b.frame = NSRect(x: 6, y: 6 + CGFloat(i) * rowH, width: panelWidth - 20, height: rowH)
+            let attr = NSMutableAttributedString()
+            attr.append(NSAttributedString(string: c.sym.replacingOccurrences(of: "\n", with: "⏎"),
+                attributes: [.font: mono, .foregroundColor: NSColor.labelColor]))
+            attr.append(NSAttributedString(string: "   " + c.desc,
+                attributes: [.font: sys, .foregroundColor: NSColor.secondaryLabelColor]))
+            b.attributedTitle = attr
+            container.addSubview(b)
+            rowButtons.append(b)
+        }
+        applyHighlight()
+        var x = screenPoint.x
+        if let vf = NSScreen.main?.visibleFrame, x + panelWidth > vf.maxX { x = vf.maxX - panelWidth }
+        setFrame(NSRect(x: x, y: screenPoint.y - visibleH, width: panelWidth, height: visibleH), display: true)
+        orderFront(nil)
+    }
+
+    @objc private func rowClick(_ sender: NSButton) { onSelect?(sender.tag) }
+    func hide() { orderOut(nil) }
+}
 
 struct SourceEditor: NSViewRepresentable {
     @Binding var text: String
     @EnvironmentObject var controller: EditorController
     var monospaced: Bool = true
 
-    func makeCoordinator() -> Coordinator { Coordinator(controller: controller, text: $text) }
+    func makeCoordinator() -> Coordinator { Coordinator(controller: controller, text: $text, md: monospaced) }
 
     func makeNSView(context: Context) -> NSScrollView {
-        let tv = NSTextView()
+        let tv = NoUndoTextView()
         tv.isEditable = true
         tv.isSelectable = true
         tv.drawsBackground = true
         tv.backgroundColor = NSColor.textBackgroundColor
         tv.textColor = NSColor.textColor
         tv.font = monospaced
-            ? NSFont.monospacedSystemFont(ofSize: 13, weight: .regular)
+            ? NSFont.monospacedSystemFont(ofSize: 16, weight: .regular)
             : NSFont.systemFont(ofSize: 15)
         tv.autoresizingMask = [.width]
         tv.textContainerInset = NSSize(width: 12, height: 12)
@@ -551,6 +905,11 @@ struct SourceEditor: NSViewRepresentable {
         tv.textContainer?.size = NSSize(width: 0, height: 0)
         tv.insertionPointColor = NSColor.controlAccentColor
         tv.usesFindBar = false
+        tv.isAutomaticQuoteSubstitutionEnabled = false
+        tv.isAutomaticDashSubstitutionEnabled = false
+        tv.isAutomaticTextReplacementEnabled = false
+        tv.isAutomaticSpellingCorrectionEnabled = false
+        tv.smartInsertDeleteEnabled = false
         let scroll = NSScrollView()
         scroll.documentView = tv
         scroll.hasVerticalScroller = true
@@ -563,10 +922,14 @@ struct SourceEditor: NSViewRepresentable {
 
     func updateNSView(_ nsView: NSScrollView, context: Context) {
         guard let tv = context.coordinator.textView else { return }
-        if tv.string != text {
-            let selected = tv.selectedRange()
+        let composing = tv.hasMarkedText()
+        if !composing, tv.string != text {
+            let sel = tv.selectedRange()
             tv.string = text
-            tv.setSelectedRange(selected)
+            let len = (text as NSString).length
+            let loc = min(sel.location, len)
+            tv.setSelectedRange(NSRange(location: loc, length: min(sel.length, len - loc)))
+            context.coordinator.panel.hide()
         }
         if let req = controller.scrollRequest,
            context.coordinator.lastScrollID != req.id,
@@ -579,6 +942,13 @@ struct SourceEditor: NSViewRepresentable {
             context.coordinator.lastSearchID = sel.id
             tv.setSelectedRange(NSRange(location: sel.range.location, length: 0))
             tv.scrollRangeToVisible(sel.range)
+        }
+        if let req = controller.caretRequest,
+           context.coordinator.lastCaretID != req.id {
+            context.coordinator.lastCaretID = req.id
+            let loc = min(req.location, (tv.string as NSString).length)
+            tv.setSelectedRange(NSRange(location: loc, length: 0))
+            tv.scrollRangeToVisible(NSRange(location: loc, length: 0))
         }
         context.coordinator.refreshHighlights()
     }
@@ -601,23 +971,39 @@ struct SourceEditor: NSViewRepresentable {
     final class Coordinator: NSObject, NSTextViewDelegate {
         let controller: EditorController
         var binding: Binding<String>
+        let md: Bool
         weak var textView: NSTextView?
         var lastScrollID: UUID?
         var lastSearchID: UUID?
+        var lastCaretID: UUID?
         var lastHL: [NSRange] = []
+        let panel = SnippetPanel()
+        private var mouseMonitor: Any?
         private var bag = Set<AnyCancellable>()
 
-        init(controller: EditorController, text: Binding<String>) {
+        init(controller: EditorController, text: Binding<String>, md: Bool) {
             self.controller = controller
             self.binding = text
+            self.md = md
             super.init()
+            mouseMonitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] e in
+                if let p = self?.panel, p.isVisible, !p.frame.contains(NSEvent.mouseLocation) {
+                    p.hide()
+                }
+                return e
+            }
             controller.$matchRanges.sink { [weak self] _ in self?.refreshHighlights() }.store(in: &bag)
             controller.$matchIndex.sink { [weak self] _ in self?.refreshHighlights() }.store(in: &bag)
             controller.$showSearch.sink { [weak self] _ in self?.refreshHighlights() }.store(in: &bag)
         }
 
+        deinit {
+            if let m = mouseMonitor { NSEvent.removeMonitor(m) }
+        }
+
         func refreshHighlights() {
             guard let tv = textView, let ts = tv.textStorage else { return }
+            guard !tv.hasMarkedText() else { return }
             let full = NSRange(location: 0, length: ts.length)
             for r in lastHL {
                 let loc = max(0, min(r.location, full.length))
@@ -644,10 +1030,71 @@ struct SourceEditor: NSViewRepresentable {
 
         func textDidChange(_ notification: Notification) {
             guard let tv = textView else { return }
+            guard !tv.hasMarkedText() else { return }
             let new = tv.string
             if new != binding.wrappedValue {
                 binding.wrappedValue = new
             }
+            updateSnippetPanel(tv)
+        }
+
+        // MARK: snippet panel
+
+        private func partialBeforeCaret(_ tv: NSTextView) -> (text: String, range: NSRange)? {
+            let sel = tv.selectedRange()
+            guard sel.length == 0 else { return nil }
+            let ns = tv.string as NSString
+            var loc = sel.location
+            var count = 0
+            while loc > 0, count < 6 {
+                if ns.substring(with: NSRange(location: loc - 1, length: 1)) == "\n" { break }
+                loc -= 1
+                count += 1
+            }
+            let range = NSRange(location: loc, length: sel.location - loc)
+            guard range.length > 0 else { return nil }
+            return (ns.substring(with: range), range)
+        }
+
+        func updateSnippetPanel(_ tv: NSTextView, forceAll: Bool = false) {
+            guard md, !tv.hasMarkedText() else { panel.hide(); return }
+            var cands: [(key: String, value: String, desc: String)] = []
+            var replaceRange: NSRange? = nil
+            if let p = partialBeforeCaret(tv) {
+                replaceRange = p.range
+                if ["/", "?", "？"].contains(p.text) {
+                    cands = mdSnippets
+                } else {
+                    cands = mdSnippets.filter { $0.key.hasPrefix(p.text) }
+                }
+            } else if forceAll {
+                cands = mdSnippets
+                replaceRange = NSRange(location: tv.selectedRange().location, length: 0)
+            } else {
+                panel.hide(); return
+            }
+            guard !cands.isEmpty, let range = replaceRange else { panel.hide(); return }
+            let rect = tv.firstRect(forCharacterRange: tv.selectedRange(), actualRange: nil)
+            let rows = cands.map { (sym: $0.key, desc: NSLocalizedString($0.desc, comment: "")) }
+            panel.show(candidates: rows, at: NSPoint(x: rect.minX, y: rect.minY)) { [weak self, weak tv] idx in
+                guard let self, let tv, idx < cands.count else { return }
+                tv.insertText(cands[idx].value, replacementRange: range)
+                self.panel.hide()
+            }
+        }
+
+        func textView(_ tv: NSTextView, doCommandBy sel: Selector) -> Bool {
+            if sel == #selector(NSTextView.complete(_:)) {
+                updateSnippetPanel(tv, forceAll: true)
+                return true
+            }
+            if panel.isVisible {
+                if sel == #selector(NSResponder.moveDown(_:)) { panel.selectNext(); return true }
+                if sel == #selector(NSResponder.moveUp(_:)) { panel.selectPrev(); return true }
+                if sel == #selector(NSResponder.insertNewline(_:)) { panel.insertCurrent(); return true }
+                if sel == #selector(NSResponder.cancelOperation(_:)) { panel.hide(); return true }
+            }
+            return false
         }
     }
 }
@@ -973,6 +1420,18 @@ struct MDApp: App {
                 Button("closeTab") {
                     if controller.docs.isEmpty == false { controller.closeDoc(at: controller.active) }
                 }.keyboardShortcut("w", modifiers: .command)
+            }
+            CommandGroup(replacing: .undoRedo) {
+                Button("undo") { controller.undo() }
+                    .keyboardShortcut("z", modifiers: .command)
+                    .disabled(!controller.canUndo)
+                Button("redo") { controller.redo() }
+                    .keyboardShortcut("z", modifiers: [.command, .shift])
+                    .disabled(!controller.canRedo)
+            }
+            CommandMenu("tools") {
+                Button("renumberOl") { controller.renumberOrderedLists() }
+                    .keyboardShortcut("r", modifiers: [.command, .option])
             }
             CommandGroup(replacing: .textEditing) {
                 Button("findNext") { controller.findNext() }.keyboardShortcut("g", modifiers: .command)

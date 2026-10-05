@@ -15,6 +15,9 @@
 - 支持 txt：txt 为整窗编辑模式（无目录、无预览切换）；md / txt 混合多标签
 - 新建文档可选 Markdown / 纯文本 (txt) 类型
 - 界面随系统语言自适应中文 / 英文（zh-Hans / en 本地化）
+- Markdown 符号智能提示浮窗：输入 `#` `>` `-` `` ` `` 等弹出候选+说明，↑/↓ 选择、回车插入、Esc 关闭；输入 `/` 或 `?` 或 ⌘Esc 查看全部；宽度自适应、可滚轮滚动
+- 预览任务列表复选框可点击：勾选回写源码 `- [ ]`↔`- [x]` 并加删除线
+- 工具 → 重排有序列表编号（⌘⌥R）：有序块标记重写为连续 1..n
 - 拖拽 `.md` 到窗口即可打开；⌘O 多选打开；最近文件菜单
 - 代码围栏内的 `#` 注释不会误入目录
 - 无需 App Store，直接安装 `.app`
@@ -25,7 +28,7 @@
 
 ## 安装
 
-1. 下载 Releases 中的 `imd-1.2.0.dmg`
+1. 下载 Releases 中的 `imd-1.3.0.dmg`
 2. 双击挂载，把 `imd` 拖到 `Applications`
 3. 首次打开若被 Gatekeeper 拦截：右键 `imd.app` → 打开；或执行 `xattr -cr /Applications/imd.app`
 
@@ -33,7 +36,7 @@
 
 ```bash
 ./build.sh          # 编译并打包 build/imd.app
-./make_dmg.sh       # 生成可分发安装包 dist/imd-1.2.0.dmg (含图标/背景/布局)
+./make_dmg.sh       # 生成可分发安装包 dist/imd-1.3.0.dmg (含图标/背景/布局)
 ```
 
 依赖：Xcode Command Line Tools（swiftc / hdiutil / iconutil / sips）与 Python 3（dmgbuild：`pip3 install --user dmgbuild`）。
