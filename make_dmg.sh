@@ -31,11 +31,11 @@ echo "[3/5] create dmg via dmgbuild"
 python3 make_dmg.py
 
 echo "[4/5] verify"
-hdiutil verify "dist/imd-1.3.1.dmg" >/dev/null
+hdiutil verify "dist/imd-1.4.0.dmg" >/dev/null
 
 echo "[5/5] clean quarantine"
-xattr -cr "dist/imd-1.3.1.dmg" 2>/dev/null || true
+xattr -cr "dist/imd-1.4.0.dmg" 2>/dev/null || true
 
 echo
-echo "done: $(pwd)/dist/imd-1.3.1.dmg"
-ls -lh dist/imd-1.3.1.dmg
+echo "done: $(pwd)/dist/imd-1.4.0.dmg"
+ls -lh dist/imd-1.4.0.dmg

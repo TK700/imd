@@ -60,3 +60,4 @@
 "snip.hr" = "分隔线";
 "tools" = "工具";
 "renumberOl" = "重排有序列表编号";
+"toggleToc" = "显示/隐藏目录";

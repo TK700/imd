@@ -47,6 +47,88 @@ struct MDDoc: Identifiable {
     var headings: [Heading] = []
     var blocks: [Block] = []
     var name: String { fileURL?.lastPathComponent ?? NSLocalizedString(isTxt ? "untitledTxt" : "untitledMd", comment: "") }
+    var tocHidden: Bool = false
+}
+
+// MARK: - Multi-window globals
+
+extension Notification.Name {
+    static let imdOpenWindow = Notification.Name("imdOpenWindow")
+}
+
+final class DragState: ObservableObject {
+    static let shared = DragState()
+    @Published var docID: UUID? = nil
+    @Published var fromWindow: Int? = nil
+    var merged = false
+}
+
+enum AppGlobals {
+    static var byWindow: [Int: EditorController] = [:]
+    static var pendingDetach: MDDoc? = nil
+
+    static func front() -> EditorController? {
+        if let k = NSApp.keyWindow, let c = byWindow[k.windowNumber] { return c }
+        return NSApp.windows.first { $0.isVisible && byWindow[$0.windowNumber] != nil }.flatMap { byWindow[$0.windowNumber] }
+    }
+
+    @MainActor
+    static func openDetachedWindow() {
+        let hc = NSHostingController(rootView: ContentView())
+        let w = NSWindow(contentViewController: hc)
+        w.title = "imd"
+        w.setContentSize(NSSize(width: 900, height: 560))
+        w.center()
+        w.makeKeyAndOrderFront(nil)
+    }
+
+    static var pendingOpen: [URL] = []
+
+    static func closeWindow(for c: EditorController) {
+        guard let w = NSApp.windows.first(where: { byWindow[$0.windowNumber] === c }) else { return }
+        byWindow = byWindow.filter { $0.value !== c }
+        w.close()
+    }
+
+    static func cleanup() {
+        DragState.shared.docID = nil
+        DragState.shared.fromWindow = nil
+        DragState.shared.merged = false
+    }
+
+    @discardableResult
+    static func handleTabDrop(target: EditorController, onTabBar: Bool) -> Bool {
+        let st = DragState.shared
+        guard let id = st.docID, let from = st.fromWindow, let src = byWindow[from] else { return false }
+        defer { cleanup() }
+        if src === target {
+            guard !onTabBar, src.docs.count > 1, let doc = src.removeDoc(id: id) else { return true }
+            pendingDetach = doc
+            NotificationCenter.default.post(name: .imdOpenWindow, object: src)
+            return true
+        }
+        if let doc = src.removeDoc(id: id) {
+            target.adopt(doc)
+            if src.docs.isEmpty { closeWindow(for: src) }
+        }
+        return true
+    }
+}
+
+struct WindowBinder: NSViewRepresentable {
+    let controller: EditorController
+    final class V: NSView {
+        var controller: EditorController?
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            if let w = window, let c = controller { AppGlobals.byWindow[w.windowNumber] = c }
+        }
+    }
+    func makeNSView(context: Context) -> V { let v = V(); v.controller = controller; return v }
+    func updateNSView(_ v: V, context: Context) {
+        v.controller = controller
+        if let w = v.window { AppGlobals.byWindow[w.windowNumber] = controller }
+    }
 }
 
 // MARK: - Controller
@@ -151,6 +233,26 @@ final class EditorController: ObservableObject {
         else if active > idx { active -= 1 }
     }
 
+    @discardableResult
+    func removeDoc(id: UUID) -> MDDoc? {
+        guard let idx = docs.firstIndex(where: { $0.id == id }) else { return nil }
+        let d = docs[idx]
+        closeDoc(at: idx)
+        return d
+    }
+
+    func adopt(_ doc: MDDoc) {
+        if docs.contains(where: { $0.id == doc.id }) { return }
+        docs.append(doc)
+        active = docs.count - 1
+        reparseActive()
+    }
+
+    func toggleToc() {
+        guard docs.indices.contains(active) else { return }
+        docs[active].tocHidden.toggle()
+    }
+
     func selectTab(_ idx: Int) {
         if docs.indices.contains(idx) {
             active = idx
@@ -253,7 +355,7 @@ final class EditorController: ObservableObject {
         guard docs.indices.contains(active) else { return }
         let panel = NSSavePanel()
         panel.title = NSLocalizedString("saveAsPanel", comment: "")
-        panel.allowedContentTypes = [UTType(filenameExtension: "md")].compactMap { $0 }
+        panel.allowedContentTypes = [UTType(filenameExtension: "md"), UTType(filenameExtension: "txt")].compactMap { $0 }
         panel.nameFieldStringValue = activeDoc?.name ?? "未命名.md"
         if panel.runModal() == .OK, let url = panel.url {
             do {
@@ -646,6 +748,7 @@ struct PreviewView: NSViewRepresentable {
         let cfg = WKWebViewConfiguration()
         cfg.userContentController.add(context.coordinator, name: "taskToggle")
         let web = WKWebView(frame: .zero, configuration: cfg)
+        web.unregisterDraggedTypes()
         web.navigationDelegate = context.coordinator
         context.coordinator.webView = web
         web.loadHTMLString(shellHTML(), baseURL: nil)
@@ -905,6 +1008,7 @@ struct SourceEditor: NSViewRepresentable {
         tv.textContainer?.size = NSSize(width: 0, height: 0)
         tv.insertionPointColor = NSColor.controlAccentColor
         tv.usesFindBar = false
+        tv.unregisterDraggedTypes()
         tv.isAutomaticQuoteSubstitutionEnabled = false
         tv.isAutomaticDashSubstitutionEnabled = false
         tv.isAutomaticTextReplacementEnabled = false
@@ -1156,6 +1260,9 @@ struct TabBar: View {
         }
         .frame(height: 30)
         .background(Color(NSColor.windowBackgroundColor))
+        .onDrop(of: [.text], isTargeted: nil) { _ in
+            AppGlobals.handleTabDrop(target: controller, onTabBar: true)
+        }
     }
 
     @ViewBuilder
@@ -1188,6 +1295,12 @@ struct TabBar: View {
         }
         .contentShape(Rectangle())
         .onTapGesture { controller.selectTab(idx) }
+        .onDrag {
+            DragState.shared.docID = doc.id
+            DragState.shared.fromWindow = NSApp.keyWindow?.windowNumber
+            DragState.shared.merged = false
+            return NSItemProvider(object: doc.id.uuidString as NSString)
+        }
         .contextMenu {
             Button("close") { controller.closeDoc(at: idx) }
             Button("save") { controller.selectTab(idx); controller.save() }
@@ -1271,15 +1384,39 @@ struct SearchBar: View {
 // MARK: - Content
 
 struct ContentView: View {
-    @EnvironmentObject var controller: EditorController
+    @StateObject private var controller = EditorController()
+    @ObservedObject private var dragState = DragState.shared
     @State private var tab: ActiveTab = .preview
     @State private var dragOver = false
+
 
     private var textBinding: Binding<String> {
         Binding(
             get: { controller.activeText },
             set: { controller.setText($0) }
         )
+    }
+
+    @ViewBuilder
+    private var contentRegion: some View {
+        if controller.docs.isEmpty {
+            emptyState
+        } else if controller.activeDoc?.isTxt == true {
+            txtLayout
+        } else {
+            mdLayout
+        }
+    }
+
+    @ViewBuilder
+    private var tabDragOverlay: some View {
+        if dragState.docID != nil {
+            Color.clear
+                .contentShape(Rectangle())
+                .onDrop(of: [.text], isTargeted: nil) { _ in
+                    AppGlobals.handleTabDrop(target: controller, onTabBar: false)
+                }
+        }
     }
 
     @ViewBuilder
@@ -1296,14 +1433,33 @@ struct ContentView: View {
     private var mdLayout: some View {
         HSplitView {
             TocView()
-                .frame(minWidth: 200, idealWidth: 260, maxWidth: 420)
+                .frame(
+                    minWidth: controller.activeDoc?.tocHidden == true ? 0 : 200,
+                    idealWidth: controller.activeDoc?.tocHidden == true ? 0 : 260,
+                    maxWidth: controller.activeDoc?.tocHidden == true ? 0 : 420
+                )
+                .opacity(controller.activeDoc?.tocHidden == true ? 0 : 1)
+                .disabled(controller.activeDoc?.tocHidden == true)
 
             VStack(spacing: 0) {
-                Picker("", selection: $tab) {
-                    Text("preview").tag(ActiveTab.preview)
-                    Text("source").tag(ActiveTab.source)
+                ZStack {
+                    Picker("", selection: $tab) {
+                        Text("preview").tag(ActiveTab.preview)
+                        Text("source").tag(ActiveTab.source)
+                    }
+                    .pickerStyle(.segmented)
+                    .frame(maxWidth: 320)
+
+                    HStack {
+                        Button { controller.toggleToc() } label: {
+                            Image(systemName: controller.activeDoc?.tocHidden == true ? "sidebar.leading" : "sidebar.left")
+                                .foregroundColor(.secondary)
+                        }
+                        .buttonStyle(.borderless)
+                        .help("toggleToc")
+                        Spacer()
+                    }
                 }
-                .pickerStyle(.segmented)
                 .padding(8)
 
                 if controller.showSearch {
@@ -1320,28 +1476,49 @@ struct ContentView: View {
             }
             .frame(minWidth: 480)
         }
+        .background(SplitStyleApplier())
     }
 
     var body: some View {
         VStack(spacing: 0) {
             TabBar()
             Divider()
-            if controller.docs.isEmpty {
-                emptyState
-            } else if controller.activeDoc?.isTxt == true {
-                txtLayout
-            } else {
-                mdLayout
-            }
+            contentRegion
+                .overlay(tabDragOverlay)
         }
+        .environmentObject(controller)
         .background(dragOver ? Color.accentColor.opacity(0.12) : Color.clear)
         .onDrop(of: [.fileURL], isTargeted: $dragOver) { providers in
             handleDrop(providers)
         }
+        .background(WindowBinder(controller: controller))
+        .onAppear {
+            DispatchQueue.main.async {
+                if let d = AppGlobals.pendingDetach {
+                    controller.adopt(d)
+                    AppGlobals.pendingDetach = nil
+                }
+                if controller.docs.isEmpty, !AppGlobals.pendingOpen.isEmpty {
+                    AppGlobals.pendingOpen.forEach { controller.open(url: $0) }
+                    AppGlobals.pendingOpen = []
+                }
+            }
+        }
+        .onDisappear {
+            AppGlobals.byWindow = AppGlobals.byWindow.filter { $0.value !== controller }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .imdOpenWindow)) { note in
+            if note.object as? EditorController === controller {
+                AppGlobals.openDetachedWindow()
+            }
+        }
         .onOpenURL { url in
             let u = url.isFileURL ? url : URL(fileURLWithPath: url.path)
-            if ["md", "markdown", "mdown", "mkd", "txt"].contains(u.pathExtension.lowercased()) {
-                controller.open(url: u)
+            guard ["md", "markdown", "mdown", "mkd", "txt"].contains(u.pathExtension.lowercased()) else { return }
+            let target = AppGlobals.front() ?? controller
+            target.open(url: u)
+            if target !== controller && controller.docs.isEmpty {
+                AppGlobals.closeWindow(for: controller)
             }
         }
         .onChange(of: controller.requestedTab) { req in
@@ -1386,62 +1563,87 @@ struct ContentView: View {
 
 // MARK: - App
 
+struct SplitStyleApplier: NSViewRepresentable {
+    func makeNSView(context: Context) -> NSView { NSView() }
+    func updateNSView(_ v: NSView, context: Context) {
+        DispatchQueue.main.async {
+            guard let w = v.window, let sv = findSplit(w.contentView) else { return }
+            sv.dividerStyle = .paneSplitter
+        }
+    }
+    private func findSplit(_ v: NSView?) -> NSSplitView? {
+        guard let v = v else { return nil }
+        if let sv = v as? NSSplitView { return sv }
+        for sub in v.subviews { if let r = findSplit(sub) { return r } }
+        return nil
+    }
+}
+
+final class AppDelegate: NSObject, NSApplicationDelegate {
+
+    func application(_ application: NSApplication, open urls: [URL]) {
+        let md = urls.filter { ["md", "markdown", "mdown", "mkd", "txt"].contains($0.pathExtension.lowercased()) }
+        guard !md.isEmpty else { return }
+        if let c = AppGlobals.front() {
+            md.forEach { c.open(url: $0) }
+            NSApp.windows.first { AppGlobals.byWindow[$0.windowNumber] === c }?.makeKeyAndOrderFront(nil)
+        } else {
+            AppGlobals.pendingOpen += md
+        }
+    }
+}
+
 @main
 struct MDApp: App {
-    @StateObject private var controller = EditorController()
-
+    @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
     var body: some Scene {
         Window("imd", id: "main") {
             ContentView()
-                .environmentObject(controller)
                 .frame(minWidth: 900, minHeight: 560)
         }
         .commands {
             CommandGroup(replacing: .newItem) {
-                Button("new") { controller.newDocDialog() }.keyboardShortcut("n", modifiers: .command)
-                Button("open") { controller.openDialog() }.keyboardShortcut("o", modifiers: .command)
+                Button("new") { AppGlobals.front()?.newDocDialog() }.keyboardShortcut("n", modifiers: .command)
+                Button("open") { AppGlobals.front()?.openDialog() }.keyboardShortcut("o", modifiers: .command)
                 Divider()
                 Menu("openRecent") {
-                    if controller.recentFiles.isEmpty {
+                    let rec = AppGlobals.front()?.recentFiles ?? []
+                    if rec.isEmpty {
                         Text("none").foregroundStyle(.secondary)
                     } else {
-                        ForEach(controller.recentFiles, id: \.self) { url in
-                            Button(url.lastPathComponent) { controller.open(url: url) }
+                        ForEach(rec, id: \.self) { url in
+                            Button(url.lastPathComponent) { AppGlobals.front()?.open(url: url) }
                         }
                         Divider()
-                        Button("clearRecent") { controller.clearRecent() }
+                        Button("clearRecent") { AppGlobals.front()?.clearRecent() }
                     }
                 }
             }
             CommandGroup(replacing: .saveItem) {
-                Button("save") { controller.save() }.keyboardShortcut("s", modifiers: .command)
-                Button("saveAs") { controller.saveAs() }.keyboardShortcut("s", modifiers: [.command, .shift])
+                Button("save") { AppGlobals.front()?.save() }.keyboardShortcut("s", modifiers: .command)
+                Button("saveAs") { AppGlobals.front()?.saveAs() }.keyboardShortcut("s", modifiers: [.command, .shift])
                 Divider()
                 Button("closeTab") {
-                    if controller.docs.isEmpty == false { controller.closeDoc(at: controller.active) }
+                    if let c = AppGlobals.front(), !c.docs.isEmpty { c.closeDoc(at: c.active) }
                 }.keyboardShortcut("w", modifiers: .command)
             }
             CommandGroup(replacing: .undoRedo) {
-                Button("undo") { controller.undo() }
-                    .keyboardShortcut("z", modifiers: .command)
-                    .disabled(!controller.canUndo)
-                Button("redo") { controller.redo() }
-                    .keyboardShortcut("z", modifiers: [.command, .shift])
-                    .disabled(!controller.canRedo)
+                Button("undo") { AppGlobals.front()?.undo() }.keyboardShortcut("z", modifiers: .command)
+                Button("redo") { AppGlobals.front()?.redo() }.keyboardShortcut("z", modifiers: [.command, .shift])
             }
             CommandMenu("tools") {
-                Button("renumberOl") { controller.renumberOrderedLists() }
+                Button("renumberOl") { AppGlobals.front()?.renumberOrderedLists() }
                     .keyboardShortcut("r", modifiers: [.command, .option])
             }
             CommandGroup(replacing: .textEditing) {
-                Button("findNext") { controller.findNext() }.keyboardShortcut("g", modifiers: .command)
-                Button("findPrev") { controller.findPrevious() }.keyboardShortcut("g", modifiers: [.command, .shift])
+                Button("findNext") { AppGlobals.front()?.findNext() }.keyboardShortcut("g", modifiers: .command)
+                Button("findPrev") { AppGlobals.front()?.findPrevious() }.keyboardShortcut("g", modifiers: [.command, .shift])
             }
             CommandGroup(replacing: .toolbar) {
-                Button("preview") { controller.requestedTab = .preview }.keyboardShortcut("1", modifiers: .command)
-                Button("source") { controller.requestedTab = .source }.keyboardShortcut("2", modifiers: .command)
+                Button("preview") { AppGlobals.front()?.requestedTab = .preview }.keyboardShortcut("1", modifiers: .command)
+                Button("source") { AppGlobals.front()?.requestedTab = .source }.keyboardShortcut("2", modifiers: .command)
                 Divider()
-                Button("findReplace") { controller.toggleSearch() }.keyboardShortcut("f", modifiers: .command)
+                Button("findReplace") { AppGlobals.front()?.toggleSearch() }.keyboardShortcut("f", modifiers: .command)
             }
         }
     }
