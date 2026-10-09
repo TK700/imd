@@ -26,12 +26,12 @@
 ## 安装
 
 ### macOS
-1. Releases 下载 `imd-1.5.0.dmg`
+1. Releases 下载 `imd-1.5.3.dmg`
 2. 双击挂载，拖 `imd` 到 `Applications`
 3. 首次若被拦：右键 `imd.app` → 打开，或 `xattr -cr /Applications/imd.app`
 
 ### Windows
-1. Releases 下载 `imd_1.5.0_x64-setup.exe`（推荐）或 `.msi`（企业部署）
+1. Releases 下载 `imd_1.5.3_x64-setup.exe`（推荐）或 `.msi`（企业部署）
 2. 双击安装
 
 ## 从源码构建
