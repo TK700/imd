@@ -3,10 +3,6 @@ name = "imd"
 version = "1.4.0"
 edition = "2021"
 
-[lib]
-name = "imd_lib"
-crate-type = ["staticlib", "cdylib", "rlib"]
-
 [[bin]]
 name = "imd"
 path = "src/main.rs"
