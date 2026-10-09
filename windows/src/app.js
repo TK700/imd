@@ -1,5 +1,6 @@
 // imd Windows frontend (reuses shared/preview for rendering)
 const { invoke } = window.__TAURI__?.core ?? { invoke: () => Promise.reject('no-tauri') };
+const listen = window.__TAURI__?.event?.listen;
 
 const state = {
   docs: [],            // {id,name,path,text,dirty,isTxt,tocHidden,tab:'preview'|'source'}
@@ -44,15 +45,24 @@ function newDoc(isTxt) {
 async function openFile() {
   try {
     const d = await invoke('open_file');
-    if (d) {
-      if (state.docs.some(x => x.path === d.path)) { state.active = state.docs.findIndex(x => x.path === d.path); }
-      else {
-        state.docs.push({ id: crypto.randomUUID(), name: d.name, path: d.path, text: d.text, dirty: false, isTxt: d.name.toLowerCase().endsWith('.txt'), tocHidden: false, tab: 'preview' });
-        state.active = state.docs.length - 1;
-      }
-      render();
-    }
+    if (d) addDoc(d);
   } catch (e) { console.error(e); }
+}
+
+async function openPath(path) {
+  try {
+    const d = await invoke('open_path', { path });
+    if (d) addDoc(d);
+  } catch (e) { console.error(e); }
+}
+
+function addDoc(d) {
+  if (state.docs.some(x => x.path === d.path && d.path)) { state.active = state.docs.findIndex(x => x.path === d.path); }
+  else {
+    state.docs.push({ id: crypto.randomUUID(), name: d.name, path: d.path, text: d.text, dirty: false, isTxt: d.name.toLowerCase().endsWith('.txt'), tocHidden: false, tab: 'preview' });
+    state.active = state.docs.length - 1;
+  }
+  render();
 }
 
 async function saveActive() {
@@ -192,4 +202,15 @@ document.addEventListener('keydown', (e) => {
 });
 
 // boot
-loadL10n().then(() => { newDoc(false); render(); });
+loadL10n().then(async () => {
+  if (listen) listen('imd:open-paths', e => {
+    const paths = typeof e.payload === 'string' ? JSON.parse(e.payload) : e.payload;
+    (paths || []).forEach(p => openPath(p));
+  });
+  try {
+    const paths = await invoke('startup_paths');
+    if (Array.isArray(paths) && paths.length) paths.forEach(openPath);
+    else newDoc(false);
+  } catch (e) { newDoc(false); }
+  render();
+});

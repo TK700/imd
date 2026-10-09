@@ -18,6 +18,10 @@
     "active": true,
     "targets": ["msi", "nsis"],
     "icon": ["icons/icon.png", "icons/icon.ico"],
-    "publisher": "Thinking"
+    "publisher": "Thinking",
+    "fileAssociations": [
+      { "ext": ["md", "markdown", "mdown", "mkd"], "name": "Markdown", "role": "Editor" },
+      { "ext": ["txt"], "name": "Plain Text", "role": "Editor" }
+    ]
   }
 }

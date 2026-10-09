@@ -4,8 +4,9 @@ use rfd::FileDialog;
 use serde::Serialize;
 use std::fs;
 use std::path::PathBuf;
+use tauri::{DragDropEvent, Emitter, Manager, WindowEvent};
 
-#[derive(Serialize)]
+#[derive(Serialize, Clone)]
 struct OpenedDoc { path: String, name: String, text: String }
 
 fn name_of(p: &PathBuf) -> String {
@@ -17,6 +18,19 @@ fn open_file() -> Option<OpenedDoc> {
     let p = FileDialog::new().add_filter("Markdown", &["md", "markdown", "mdown", "mkd", "txt"]).pick_file()?;
     let text = fs::read_to_string(&p).ok()?;
     Some(OpenedDoc { path: p.to_string_lossy().to_string(), name: name_of(&p), text })
+}
+
+#[tauri::command]
+fn open_path(path: String) -> Option<OpenedDoc> {
+    let p = PathBuf::from(&path);
+    if !p.is_file() { return None; }
+    let text = fs::read_to_string(&p).ok()?;
+    Some(OpenedDoc { path: p.to_string_lossy().to_string(), name: name_of(&p), text })
+}
+
+#[tauri::command]
+fn startup_paths(state: tauri::State<Vec<String>>) -> Vec<String> {
+    state.inner().clone()
 }
 
 #[tauri::command]
@@ -35,8 +49,20 @@ fn save_as(default_name: String, content: String) -> Option<OpenedDoc> {
 }
 
 fn main() {
+    let startup_args: Vec<String> = std::env::args()
+        .skip(1)
+        .filter(|a| !a.starts_with('-') && std::path::Path::new(a).exists())
+        .collect();
+
     tauri::Builder::default()
-        .invoke_handler(tauri::generate_handler![open_file, save_file, save_as])
+        .manage(startup_args)
+        .on_window_event(|window, event| {
+            if let WindowEvent::DragDrop(DragDropEvent::Drop { paths, .. }) = event {
+                let ps: Vec<String> = paths.iter().map(|p| p.to_string_lossy().to_string()).collect();
+                let _ = window.emit("imd:open-paths", ps);
+            }
+        })
+        .invoke_handler(tauri::generate_handler![open_file, open_path, startup_paths, save_file, save_as])
         .run(tauri::generate_context!())
         .expect("error while running imd");
 }
