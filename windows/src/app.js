@@ -1,13 +1,21 @@
 // imd Windows frontend (reuses shared/preview for rendering)
 const { invoke } = window.__TAURI__?.core ?? { invoke: () => Promise.reject('no-tauri') };
 const listen = window.__TAURI__?.event?.listen;
+const emitTo = window.__TAURI__?.event?.emitTo;
 
 const state = {
   docs: [],            // {id,name,path,text,dirty,isTxt,tocHidden,tab:'preview'|'source'}
   active: 0,
   search: { term: '', replace: '', case: false, ranges: [], idx: -1, visible: false },
   l10n: {},
+  snip: { open: false, items: [], sel: 0, rStart: 0, rLen: 0 },
+  snippets: [],
 };
+
+const TW = window.__TAURI__ || {};
+const WebviewWindow = TW.webviewWindow && TW.webviewWindow.WebviewWindow;
+const getCurrentWindow = TW.webviewWindow && TW.webviewWindow.getCurrentWindow;
+const currentLabel = getCurrentWindow ? getCurrentWindow().label : 'main';
 
 const $ = (id) => document.getElementById(id);
 const lang = () => (navigator.language || 'en').toLowerCase().startsWith('zh') ? 'zh-Hans' : 'en';
@@ -98,6 +106,24 @@ function setText(v) {
   renderTabs(); renderToc(); renderPreview();
 }
 
+function addDocRaw(doc) {
+  const i = state.docs.findIndex(x => x.id === doc.id);
+  if (i >= 0) state.active = i;
+  else { state.docs.push(doc); state.active = state.docs.length - 1; }
+  render();
+}
+function outsideWindow(e) {
+  const wx = window.screenX, wy = window.screenY;
+  return e.screenX < wx || e.screenX > wx + window.outerWidth || e.screenY < wy || e.screenY > wy + window.outerHeight;
+}
+async function detach(idx) {
+  const d = state.docs[idx];
+  const label = 'imd-' + Date.now();
+  try { await invoke('put_pending', { key: 'label:' + label, doc: JSON.parse(JSON.stringify(d)) }); } catch (e) {}
+  if (WebviewWindow) { try { new WebviewWindow(label, { url: 'index.html', width: 900, height: 560, title: 'imd' }); } catch (e) {} }
+  closeDoc(idx);
+}
+
 function renderTabs() {
   const bar = $('tabbar');
   bar.innerHTML = '';
@@ -107,6 +133,7 @@ function renderTabs() {
     el.innerHTML = `<span>${d.name}${d.dirty ? ' •' : ''}</span><b>x</b>`;
     el.onclick = () => { state.active = i; render(); };
     el.querySelector('b').onclick = (e) => { e.stopPropagation(); closeDoc(i); };
+    el.addEventListener('mousedown', (e) => { if (e.target.tagName === 'B') return; startTabDrag(e, i, d); });
     bar.appendChild(el);
   });
   const plus = document.createElement('button'); plus.textContent = '+'; plus.className = 'add';
@@ -121,8 +148,9 @@ function renderToc() {
   const d = activeDoc();
   const toc = $('toc');
   toc.innerHTML = '';
-  if (!d || d.tocHidden || d.isTxt) { toc.style.display = 'none'; return; }
-  toc.style.display = '';
+  const dv = $('divider');
+  if (!d || d.tocHidden || d.isTxt) { toc.style.display = 'none'; if (dv) dv.style.display = 'none'; return; }
+  toc.style.display = ''; if (dv) dv.style.display = '';
   for (const h of parseHeadings(d.text)) {
     const a = document.createElement('div');
     a.className = 'toc-l' + h.level;
@@ -191,8 +219,142 @@ function recomputeSearch() {
   applySearch();
 }
 
+// snippet hint panel (non-blocking, keyboard-only)
+async function loadSnippets() {
+  try { const r = await fetch('snippets.json'); state.snippets = await r.json(); } catch (e) { state.snippets = []; }
+}
+function caretCoords(ta) {
+  const m = document.createElement('div');
+  const cs = getComputedStyle(ta);
+  m.style.cssText = 'position:absolute;visibility:hidden;white-space:pre-wrap;word-wrap:break-word;top:0;left:0;';
+  ['fontFamily','fontSize','fontWeight','lineHeight','letterSpacing','padding','borderWidth','boxSizing'].forEach(k => { m.style[k] = cs[k]; });
+  m.style.width = ta.clientWidth + 'px';
+  const before = ta.value.slice(0, ta.selectionStart);
+  m.textContent = before;
+  const mark = document.createElement('span'); mark.textContent = '\u200b';
+  m.appendChild(mark);
+  document.body.appendChild(m);
+  const x = mark.offsetLeft, y = mark.offsetTop;
+  const lh = parseFloat(cs.lineHeight) || 20;
+  m.remove();
+  const r = ta.getBoundingClientRect();
+  return { x: r.left + x, y: r.top + y - ta.scrollTop + lh };
+}
+function hideSnip() { state.snip.open = false; $('snip').style.display = 'none'; }
+function snipSel(delta) {
+  const s = state.snip; if (!s.open) return;
+  s.sel = (s.sel + delta + s.items.length) % s.items.length;
+  [...$('snip').children].forEach((el, i) => el.classList.toggle('sel', i === s.sel));
+  const el = $('snip').children[s.sel]; if (el) el.scrollIntoView({ block: 'nearest' });
+}
+function snipInsert(i) {
+  const s = state.snip, ta = $('sourcePane'), d = activeDoc();
+  if (!s.open || i < 0 || i >= s.items.length || !d) return;
+  const v = s.items[i].value;
+  d.text = d.text.slice(0, s.rStart) + v + d.text.slice(s.rStart + s.rLen);
+  d.dirty = true;
+  ta.value = d.text;
+  const np = s.rStart + v.length;
+  ta.setSelectionRange(np, np);
+  hideSnip();
+  setText(d.text);
+  ta.focus();
+}
+function updateSnip(forceAll) {
+  const d = activeDoc(), ta = $('sourcePane'), box = $('snip');
+  if (!d || d.isTxt || document.activeElement !== ta) { hideSnip(); return; }
+  const pos = ta.selectionStart;
+  if (pos !== ta.selectionEnd) { hideSnip(); return; }
+  let loc = pos, count = 0;
+  while (loc > 0 && count < 6) { if (ta.value[loc - 1] === '\n') break; loc--; count++; }
+  const partial = ta.value.slice(loc, pos);
+  let items = [], rStart = loc, rLen = partial.length;
+  if (partial && ['/', '?', '\uff1f'].includes(partial)) items = state.snippets.slice();
+  else if (partial) items = state.snippets.filter(x => x.key.startsWith(partial));
+  else if (forceAll) { items = state.snippets.slice(); rStart = pos; rLen = 0; }
+  else { hideSnip(); return; }
+  if (!items.length) { hideSnip(); return; }
+  const s = state.snip;
+  s.open = true; s.items = items; s.sel = 0; s.rStart = rStart; s.rLen = rLen;
+  box.innerHTML = '';
+  items.forEach((it, i) => {
+    const row = document.createElement('div');
+    row.className = 'snip-row' + (i === 0 ? ' sel' : '');
+    const sym = document.createElement('span'); sym.className = 'snip-sym'; sym.textContent = it.key;
+    const desc = document.createElement('span'); desc.className = 'snip-desc'; desc.textContent = t(it.desc);
+    row.appendChild(sym); row.appendChild(desc);
+    box.appendChild(row);
+  });
+  box.style.display = 'block';
+  box.style.width = 'max-content';
+  const w = Math.min(box.offsetWidth + 2, 480);
+  const c = caretCoords(ta);
+  box.style.width = w + 'px';
+  box.style.left = Math.min(c.x, window.innerWidth - w - 8) + 'px';
+  box.style.top = Math.min(c.y + 4, window.innerHeight - Math.min(box.offsetHeight, 320) - 8) + 'px';
+}
+$('sourcePane').addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && e.ctrlKey) { e.preventDefault(); e.stopPropagation(); updateSnip(true); return; }
+  if (!state.snip.open) return;
+  if (e.key === 'ArrowDown') { e.preventDefault(); e.stopPropagation(); snipSel(1); }
+  else if (e.key === 'ArrowUp') { e.preventDefault(); e.stopPropagation(); snipSel(-1); }
+  else if (e.key === 'Enter') { e.preventDefault(); e.stopPropagation(); snipInsert(state.snip.sel); }
+  else if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); hideSnip(); }
+});
+$('sourcePane').addEventListener('keyup', () => { if (!state.snip.open) updateSnip(false); });
+$('sourcePane').addEventListener('blur', () => hideSnip());
+
+// divider resize
+(function () {
+  const dv = $('divider'); if (!dv) return;
+  let sx = 0, sw = 0, on = false;
+  dv.addEventListener('mousedown', (e) => { on = true; sx = e.clientX; sw = $('toc').offsetWidth; e.preventDefault(); });
+  window.addEventListener('mousemove', (e) => { if (!on) return; $('toc').style.width = Math.min(Math.max(sw + (e.clientX - sx), 140), 480) + 'px'; });
+  window.addEventListener('mouseup', () => { on = false; });
+})();
+
+// tab drag: detach (drop outside) / merge (drop on other imd window)
+let tabDrag = null, ghost = null;
+function startTabDrag(e, idx, doc) {
+  if (e.button !== 0) return;
+  tabDrag = { idx, id: doc.id, doc: JSON.parse(JSON.stringify(doc)), sx: e.clientX, sy: e.clientY, moved: false };
+}
+window.addEventListener('mousemove', (e) => {
+  if (!tabDrag) return;
+  if (!tabDrag.moved) {
+    if (Math.abs(e.clientX - tabDrag.sx) < 5 && Math.abs(e.clientY - tabDrag.sy) < 5) return;
+    tabDrag.moved = true;
+    ghost = document.createElement('div');
+    ghost.id = 'dragGhost';
+    ghost.textContent = tabDrag.doc.name;
+    document.body.appendChild(ghost);
+  }
+  ghost.style.left = (e.clientX + 10) + 'px';
+  ghost.style.top = (e.clientY + 8) + 'px';
+});
+window.addEventListener('mouseup', async (e) => {
+  if (!tabDrag || !tabDrag.moved) { tabDrag = null; return; }
+  const { idx, id, doc } = tabDrag;
+  tabDrag = null;
+  if (ghost) { ghost.remove(); ghost = null; }
+  const dpr = window.devicePixelRatio || 1;
+  let target = null;
+  try { target = await invoke('window_at', { x: e.screenX * dpr, y: e.screenY * dpr, exclude: currentLabel }); } catch (err) {}
+  const cur = state.docs.findIndex(x => x.id === id);
+  if (target && emitTo) {
+    try { await emitTo(target, 'imd:adopt', doc); } catch (err) {}
+    if (cur >= 0) closeDoc(cur);
+  } else if (cur >= 0 && state.docs.length > 1 && outsideWindow(e)) {
+    detach(cur);
+  }
+});
+
+// stop webview navigating when a file is dropped
+document.addEventListener('dragover', (e) => e.preventDefault());
+document.addEventListener('drop', (e) => e.preventDefault());
+
 // events
-$('sourcePane').addEventListener('input', (e) => setText(e.target.value));
+$('sourcePane').addEventListener('input', (e) => { setText(e.target.value); updateSnip(false); });
 $('segPreview').onclick = () => { const d = activeDoc(); if (d) { d.tab = 'preview'; render(); } };
 $('segSource').onclick = () => { const d = activeDoc(); if (d) { d.tab = 'source'; render(); } };
 $('tocBtn').onclick = () => { const d = activeDoc(); if (d) { d.tocHidden = !d.tocHidden; renderToc(); } };
@@ -224,14 +386,24 @@ document.addEventListener('keydown', (e) => {
 
 // boot
 loadL10n().then(async () => {
+  await loadSnippets();
+  if (listen) listen('imd:adopt', e => { if (e && e.payload) addDocRaw(e.payload); });
   if (listen) listen('imd:open-paths', e => {
     const paths = typeof e.payload === 'string' ? JSON.parse(e.payload) : e.payload;
     (paths || []).forEach(p => openPath(p));
   });
-  try {
-    const paths = await invoke('startup_paths');
-    if (Array.isArray(paths) && paths.length) paths.forEach(openPath);
-    else newDoc(false);
-  } catch (e) { newDoc(false); }
+  let opened = false;
+  if (currentLabel !== 'main') {
+    let doc = null;
+    try { doc = await invoke('take_pending', { key: 'label:' + currentLabel }); } catch (e) {}
+    if (doc) { addDocRaw(doc); opened = true; }
+  }
+  if (!opened) {
+    try {
+      const paths = await invoke('startup_paths');
+      if (Array.isArray(paths) && paths.length) { paths.forEach(openPath); opened = true; }
+    } catch (e) {}
+  }
+  if (!opened) newDoc(false);
   render();
 });

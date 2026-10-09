@@ -40,3 +40,17 @@ body { display: flex; flex-direction: column; }
   #previewPane { background: #1d1d1f; }
   #sourcePane { background: #1d1d1f; color: #e8e8ea; }
 }
+#divider { width: 5px; flex: none; cursor: col-resize; background: transparent; }
+#divider:hover { background: rgba(0,122,255,.35); }
+#dragGhost { position: fixed; z-index: 999; pointer-events: none; background: #007aff; color: #fff; font-size: 12px; padding: 4px 10px; border-radius: 6px; opacity: .9; }
+#snip { display: none; position: fixed; z-index: 998; max-height: 320px; overflow-y: auto; background: #2b2b2d; border: 1px solid #48484a; border-radius: 6px; padding: 4px; box-shadow: 0 6px 20px rgba(0,0,0,.35); pointer-events: none; }
+.snip-row { display: flex; align-items: baseline; gap: 10px; padding: 4px 8px; border-radius: 4px; white-space: nowrap; }
+.snip-row.sel { background: #3d5a80; }
+.snip-sym { font: 600 13px "SF Mono", Consolas, monospace; color: #fff; min-width: 44px; }
+.snip-desc { font-size: 12px; color: #b9b9bb; }
+@media (prefers-color-scheme: light) {
+  #snip { background: #fff; border-color: #d2d2d7; box-shadow: 0 6px 20px rgba(0,0,0,.18); }
+  .snip-row.sel { background: #dce8f7; }
+  .snip-sym { color: #1d1d1f; }
+  .snip-desc { color: #6e6e73; }
+}
