@@ -547,186 +547,22 @@ func parseDocument(_ src: String) -> (headings: [Heading], blocks: [Block]) {
 
 // MARK: - Preview (WKWebView + marked.js)
 
-private let previewCSS = """
-:root { color-scheme: light dark; }
-* { box-sizing: border-box; }
-html, body { margin: 0; padding: 0; background: #ffffff; color: #1d1d1f;
-  font: 16px/1.65 -apple-system, "Helvetica Neue", "PingFang SC", sans-serif; }
-#content { width: 90%; max-width: 1100px; margin: 0 auto; padding: 28px 0 80px; }
-h1 { font-size: 30px; font-weight: 700; margin: 20px 0 10px; line-height: 1.25; }
-h2 { font-size: 26px; font-weight: 700; margin: 22px 0 10px; line-height: 1.25; }
-h3 { font-size: 22px; font-weight: 600; margin: 20px 0 8px; }
-h4 { font-size: 19px; font-weight: 600; margin: 18px 0 6px; }
-h5 { font-size: 17px; font-weight: 600; margin: 16px 0 6px; }
-h6 { font-size: 15px; font-weight: 600; margin: 14px 0 6px; color: #6e6e73; }
-p { margin: 0 0 12px; }
-a { color: #0066cc; text-decoration: none; }
-a:hover { text-decoration: underline; }
-ul, ol { margin: 0 0 12px; padding-left: 26px; }
-li { margin: 2px 0; }
-hr { border: none; border-top: 1px solid #d2d2d7; margin: 18px 0; }
-img { max-width: 100%; height: auto; }
-code { font-family: "SF Mono", ui-monospace, Menlo, monospace; font-size: 14px;
-  background: rgba(0,0,0,0.06); padding: 2px 5px; border-radius: 5px; }
-pre { background: #f5f5f7; padding: 14px 16px; border-radius: 10px; overflow: auto; margin: 0 0 14px; }
-pre code { background: none; padding: 0; font-size: 13px; line-height: 1.5; }
-blockquote { border-left: 4px solid #d2d2d7; margin: 0 0 12px; padding: 6px 16px;
-  color: #4a4a4f; background: rgba(0,0,0,0.03); border-radius: 0 6px 6px 0; }
-mark.imd-hl { background: #ffd60a; color: #000; border-radius: 3px; padding: 0 1px; }
-mark.imd-hl.cur { background: #ff3b30; color: #fff; }
-#content ul li.task-item { list-style: none; margin-left: -22px; }
-#content ul li.task-item input[type="checkbox"] {
-  appearance: none; -webkit-appearance: none;
-  width: 16px; height: 16px; margin-right: 8px; vertical-align: -3px;
-  border: 1.5px solid #9a9aa0; border-radius: 4px; background: transparent;
-  cursor: pointer; position: relative; transition: all .15s ease;
+private func previewAsset(_ name: String, _ ext: String) -> String {
+    guard let url = Bundle.main.url(forResource: name, withExtension: ext),
+          let s = try? String(contentsOf: url, encoding: .utf8) else { return "" }
+    return s
 }
-#content ul li.task-item input[type="checkbox"]:hover { border-color: #007aff; }
-#content ul li.task-item input[type="checkbox"]:checked { background: #007aff; border-color: #007aff; }
-#content ul li.task-item input[type="checkbox"]:checked::after {
-  content: ""; position: absolute; left: 4.5px; top: 1.5px;
-  width: 4px; height: 8px; border: solid #fff; border-width: 0 2px 2px 0;
-  transform: rotate(45deg);
-}
-#content ul li.task-item.done { text-decoration: line-through; opacity: 0.55; }
-mark.imd-mark { background: #ffd60a; color: #000; border-radius: 3px; padding: 0 2px; }
-.imd-math { font-family: "Times New Roman", Georgia, serif; font-style: italic; }
-.imd-math-block { text-align: center; margin: 14px 0; padding: 10px; border-radius: 8px;
-  font-family: "Times New Roman", Georgia, serif; font-style: italic; font-size: 17px;
-  background: rgba(0,0,0,0.03); }
-.imd-footnotes { font-size: 13px; color: #6e6e73; }
-.imd-footnotes hr { margin: 24px 0 8px; }
-.imd-footnotes ol { padding-left: 20px; }
-sup.imd-fnref { font-size: 11px; }
-table { border-collapse: collapse; width: 100%; margin: 0 0 14px; font-size: 14px; display: block; overflow-x: auto; }
-th, td { border: 1px solid #d2d2d7; padding: 7px 12px; text-align: left; }
-th { background: rgba(0,0,0,0.04); font-weight: 600; }
-@media (prefers-color-scheme: dark) {
-  html { background: #1d1d1f; }
-  body { background: #1d1d1f; color: #e8e8ea; }
-  a { color: #4ea2ff; }
-  h6 { color: #8e8e93; }
-  hr { border-color: #3a3a3c; }
-  code { background: rgba(255,255,255,0.10); }
-  pre { background: #161617; }
-  pre code { color: #e8e8ea; }
-  blockquote { border-color: #3a3a3c; color: #b0b0b5; background: rgba(255,255,255,0.04); }
-  .imd-math-block { background: rgba(255,255,255,0.05); }
-  .imd-footnotes { color: #98989d; }
-  th, td { border-color: #3a3a3c; }
-  th { background: rgba(255,255,255,0.06); }
-}
-"""
 
 private func shellHTML() -> String {
-    var markedSrc = "/* marked missing */"
-    if let url = Bundle.main.url(forResource: "marked", withExtension: "min.js"),
-       let src = try? String(contentsOf: url, encoding: .utf8) {
-        markedSrc = src
-    }
+    let css = previewAsset("preview", "css")
+    let marked = previewAsset("marked.min", "js")
+    let js = previewAsset("preview", "js")
     return """
 <!DOCTYPE html><html><head><meta charset="utf-8">
-<style>\(previewCSS)</style>
-<script>\(markedSrc)</script>
-</head><body><div id="content"></div>
-<script>
-marked.setOptions({ gfm: true, breaks: true });
-marked.use({ extensions: [{
-  name: 'imdHl',
-  level: 'inline',
-  start: function(src){ var i = src.indexOf('=='); return i === -1 ? undefined : i; },
-  tokenizer: function(src){
-    var m = /^==([^=\\n]+)==/.exec(src);
-    if (m) { return { type: 'imdHl', raw: m[0], tokens: this.lexer.inlineTokens(m[1]) }; }
-  },
-  renderer: function(tok){ return '<mark class="imd-mark">' + this.parser.parseInline(tok.tokens) + '</mark>'; }
-}] });
-function imdEsc(s){ return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
-function renderMd(md){
-  var el=document.getElementById('content');
-  try {
-    md = md.replace(/\\$\\$([\\s\\S]+?)\\$\\$/g, function(m,c){ return '\\n<div class="imd-math-block">'+imdEsc(c.trim())+'</div>\\n'; });
-    md = md.replace(/\\$([^$\\n]+)\\$/g, function(m,c){ return '<span class="imd-math">'+imdEsc(c)+'</span>'; });
-    var defs={}; var order=[];
-    md = md.replace(/^\\[\\^([^\\]]+)\\]:\\s*(.+)$/gm, function(m,id,txt){ defs[id]=txt; return ''; });
-    md = md.replace(/\\[\\^([^\\]]+)\\]/g, function(m,id){
-      if(!(id in defs)) return m;
-      var i=order.indexOf(id); if(i===-1){ order.push(id); i=order.length-1; }
-      return '<sup id="imd-fnref-'+i+'" class="imd-fnref"><a href="#imd-fn-'+i+'">['+(i+1)+']</a></sup>';
-    });
-    var html = marked.parse(md);
-    if(order.length){
-      var lis=order.map(function(id,i){ return '<li id="imd-fn-'+i+'">'+marked.parseInline(defs[id])+' <a href="#imd-fnref-'+i+'">↩</a></li>'; }).join('');
-      html += '<section class="imd-footnotes"><hr><ol>'+lis+'</ol></section>';
-    }
-    el.innerHTML = html;
-    enhanceTasks();
-  } catch(e){ el.textContent = String(e); }
-}
-function enhanceTasks(){
-  var idx = 0;
-  document.querySelectorAll('#content li').forEach(function(li){
-    var cb = li.querySelector('input[type="checkbox"]');
-    if(!cb) return;
-    li.classList.add('task-item');
-    cb.disabled = false;
-    if(cb.checked) li.classList.add('done');
-    cb.setAttribute('data-task-index', idx);
-    cb.onchange = function(){
-      li.classList.toggle('done', cb.checked);
-      window.webkit.messageHandlers.taskToggle.postMessage({ index: idx, checked: cb.checked });
-    };
-    idx++;
-  });
-}
-function scrollToHeading(i){ var hs=document.querySelectorAll('h1,h2,h3,h4,h5,h6'); if(hs[i]){ hs[i].scrollIntoView({behavior:'smooth', block:'start'}); } }
-function findOccurrences(text, term, cs){
-  var res=[];
-  var hay = cs ? text : text.toLowerCase();
-  var needle = cs ? term : term.toLowerCase();
-  if(!needle) return res;
-  var i = hay.indexOf(needle);
-  while(i !== -1){ res.push(i); i = hay.indexOf(needle, i + needle.length); }
-  return res;
-}
-function clearMarks(){
-  document.querySelectorAll('mark.imd-hl').forEach(function(m){
-    var p=m.parentNode; p.replaceChild(document.createTextNode(m.textContent), m); p.normalize();
-  });
-}
-function applyPreviewSearch(term, cs){
-  clearMarks();
-  window.__imdMarks=[];
-  if(!term) return;
-  var root=document.getElementById('content');
-  var walker=document.createTreeWalker(root, NodeFilter.SHOW_TEXT, null);
-  var nodes=[];
-  while(walker.nextNode()) nodes.push(walker.currentNode);
-  nodes.forEach(function(node){
-    var text=node.nodeValue;
-    var hits=findOccurrences(text, term, cs);
-    if(!hits.length) return;
-    var frag=document.createDocumentFragment();
-    var last=0;
-    hits.forEach(function(start){
-      if(start>last) frag.appendChild(document.createTextNode(text.slice(last,start)));
-      var mk=document.createElement('mark'); mk.className='imd-hl'; mk.textContent=text.substr(start, term.length);
-      frag.appendChild(mk);
-      last=start+term.length;
-    });
-    if(last<text.length) frag.appendChild(document.createTextNode(text.slice(last)));
-    node.parentNode.replaceChild(frag,node);
-  });
-  window.__imdMarks=Array.prototype.slice.call(document.querySelectorAll('mark.imd-hl'));
-}
-function scrollToMark(i){
-  var ms=window.__imdMarks||[];
-  ms.forEach(function(m){ m.classList.remove('cur'); });
-  if(ms[i]){ ms[i].classList.add('cur'); ms[i].scrollIntoView({block:'center',behavior:'smooth'}); }
-  return ms.length;
-}
-</script>
-</body></html>
+<style>\(css)</style>
+<script>\(marked)</script>
+<script>\(js)</script>
+</head><body><div id="content"></div></body></html>
 """
 }
 
@@ -837,31 +673,14 @@ final class NoUndoTextView: NSTextView {
     }
 }
 
-private let mdSnippets: [(key: String, value: String, desc: String)] = [
-    ("#", "# ", "snip.h1"),
-    ("##", "## ", "snip.h2"),
-    ("###", "### ", "snip.h3"),
-    ("####", "#### ", "snip.h4"),
-    ("#####", "##### ", "snip.h5"),
-    ("######", "###### ", "snip.h6"),
-    (">", "> ", "snip.quote"),
-    ("-", "- ", "snip.ul"),
-    ("- [", "- [ ] ", "snip.task"),
-    ("1.", "1. ", "snip.ol"),
-    ("[", "[文本](url)", "snip.link"),
-    ("![", "![描述](url)", "snip.image"),
-    ("`", "`代码`", "snip.code"),
-    ("```", "```swift\n\n```\n", "snip.codeblock"),
-    ("**", "**粗体**", "snip.bold"),
-    ("*", "*斜体*", "snip.italic"),
-    ("~~", "~~删除线~~", "snip.strike"),
-    ("==", "==高亮==", "snip.mark"),
-    ("[^", "[^1]", "snip.footnote"),
-    ("$$", "$$\n公式\n$$\n", "snip.mathblock"),
-    ("$", "$公式$", "snip.math"),
-    ("|", "| 列1 | 列2 | 列3 |\n| --- | --- | --- |\n|  |  |  |\n", "snip.table"),
-    ("---", "---\n", "snip.hr"),
-]
+struct SnippetJSON: Codable { let key: String; let value: String; let desc: String }
+
+private let mdSnippets: [(key: String, value: String, desc: String)] = {
+    guard let url = Bundle.main.url(forResource: "snippets", withExtension: "json"),
+          let data = try? Data(contentsOf: url),
+          let arr = try? JSONDecoder().decode([SnippetJSON].self, from: data) else { return [] }
+    return arr.map { ($0.key, $0.value, $0.desc) }
+}()
 
 // MARK: - Snippet panel (non-blocking)
 

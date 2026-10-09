@@ -1,0 +1,117 @@
+[
+  {
+    "key": "",
+    "value": "# ",
+    "desc": "snip.h1"
+  },
+  {
+    "key": "##",
+    "value": "## ",
+    "desc": "snip.h2"
+  },
+  {
+    "key": "###",
+    "value": "### ",
+    "desc": "snip.h3"
+  },
+  {
+    "key": "####",
+    "value": "#### ",
+    "desc": "snip.h4"
+  },
+  {
+    "key": "#####",
+    "value": "##### ",
+    "desc": "snip.h5"
+  },
+  {
+    "key": "######",
+    "value": "###### ",
+    "desc": "snip.h6"
+  },
+  {
+    "key": "> ",
+    "value": "> ",
+    "desc": "snip.quote"
+  },
+  {
+    "key": "-",
+    "value": "- ",
+    "desc": "snip.ul"
+  },
+  {
+    "key": "- [",
+    "value": "- [ ] ",
+    "desc": "snip.task"
+  },
+  {
+    "key": "1.",
+    "value": "1. ",
+    "desc": "snip.ol"
+  },
+  {
+    "key": "[",
+    "value": "[文本](url)",
+    "desc": "snip.link"
+  },
+  {
+    "key": "![",
+    "value": "![描述](url)",
+    "desc": "snip.image"
+  },
+  {
+    "key": "`",
+    "value": "`代码`",
+    "desc": "snip.code"
+  },
+  {
+    "key": "```",
+    "value": "```swift\n\n```\n",
+    "desc": "snip.codeblock"
+  },
+  {
+    "key": "**",
+    "value": "**粗体**",
+    "desc": "snip.bold"
+  },
+  {
+    "key": "*",
+    "value": "*斜体*",
+    "desc": "snip.italic"
+  },
+  {
+    "key": "~~",
+    "value": "~~删除线~~",
+    "desc": "snip.strike"
+  },
+  {
+    "key": "==",
+    "value": "==高亮==",
+    "desc": "snip.mark"
+  },
+  {
+    "key": "[^",
+    "value": "[^1]",
+    "desc": "snip.footnote"
+  },
+  {
+    "key": "$$",
+    "value": "$$\n公式\n$$\n",
+    "desc": "snip.mathblock"
+  },
+  {
+    "key": "$",
+    "value": "$公式$",
+    "desc": "snip.math"
+  },
+  {
+    "key": "|",
+    "value": "| 列1 | 列2 | 列3 |\n| --- | --- | --- |\n|  |  |  |\n",
+    "desc": "snip.table"
+  },
+  {
+    "key": "---",
+    "value": "---\n",
+    "desc": "snip.hr"
+  }
+]
