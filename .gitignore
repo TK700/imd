@@ -12,3 +12,5 @@ find_window_bin
 
 # 系统
 .DS_Store
+dist/*.exe
+dist/*.msi
