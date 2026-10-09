@@ -29,38 +29,44 @@
 ## 系统要求
 
 - macOS 14.0 及以上（Apple Silicon / Intel）
+- Windows 10/11 x64
 
 ## 安装
 
-1. 下载 Releases 中的 `imd-1.4.0.dmg`
+### macOS
+1. 下载 Releases 中的 `imd-1.5.0.dmg`
 2. 双击挂载，把 `imd` 拖到 `Applications`
 3. 首次打开若被 Gatekeeper 拦截：右键 `imd.app` → 打开；或执行 `xattr -cr /Applications/imd.app`
+
+### Windows
+1. 下载 `imd_1.5.0_x64-setup.exe`（NSIS，推荐）或 `imd_1.5.0_x64_en-US.msi`（企业部署）
+2. 双击安装
 
 ## 从源码构建
 
 ```bash
-./build.sh          # 编译并打包 build/imd.app
-./make_dmg.sh       # 生成可分发安装包 dist/imd-1.4.0.dmg (含图标/背景/布局)
+# macOS
+cd macos && ./build.sh && ./make_dmg.sh   # build/imd.app → dist/imd-1.5.0.dmg
+
+# Windows（需 GitHub Actions windows runner 或本机 Rust+Node）
+cd windows && npm install && npx tauri icon src-tauri/icons/icon.png && npx tauri build
 ```
 
-依赖：Xcode Command Line Tools（swiftc / hdiutil / iconutil / sips）与 Python 3（dmgbuild：`pip3 install --user dmgbuild`）。
+依赖：mac — Xcode CLT + Python 3（dmgbuild）；Win — Rust + Node + Tauri CLI。
 
 ## 项目结构
 
 ```
-App.swift        SwiftUI/AppKit 主程序（目录解析、预览 WKWebView、源码编辑、标签栏）
-Info.plist       应用清单（版权年份构建时注入）
-build.sh         编译脚本
-make_icon.swift  生成应用图标
-make_bg.swift    生成 DMG 背景（含拖拽箭头）
-make_dmg.py      dmgbuild 配置（窗口/图标布局）
-make_dmg.sh      打包 DMG 安装程序
-Resources/       marked.min.js (GFM 渲染)
+shared/                 两平台共用：preview/{preview.css,preview.js,marked.min.js}, l10n/{en,zh-Hans}.json, snippets.json
+macos/                  原生 macOS（Swift/AppKit）：App.swift, Info.plist, build.sh, make_*.swift, make_dmg.{py,sh}
+windows/                Tauri v2（Rust+静态前端）：src/{index.html,app.js,styles.css}, src-tauri/{Cargo.toml,tauri.conf.json,src/main.rs}, copy-shared.js
+.github/workflows/windows.yml   CI 出 msi/nsis
 ```
 
 ## 第三方
 
 - [marked](https://github.com/markedjs/marked) (MIT) — Markdown → HTML 渲染
+- [Tauri](https://tauri.app) (MIT/Apache) — Windows 壳
 
 ## 许可
 
