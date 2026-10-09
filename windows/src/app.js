@@ -138,15 +138,22 @@ function renderPreview() {
   const d = activeDoc();
   const pv = $('previewPane'), src = $('sourcePane');
   if (!d) { pv.style.display = 'none'; src.style.display = 'none'; return; }
-  if (d.isTxt) { pv.style.display = 'none'; src.style.display = ''; src.value = d.text; return; }
-  if (d.tab === 'preview') { pv.style.display = ''; src.style.display = 'none'; renderMd(d.text); applySearch(); }
-  else { pv.style.display = 'none'; src.style.display = ''; src.value = d.text; }
+  if (d.isTxt) { pv.style.display = 'none'; src.style.display = 'block'; src.value = d.text; return; }
+  if (d.tab === 'preview') { pv.style.display = 'block'; src.style.display = 'none'; renderMd(d.text); applySearch(); }
+  else { pv.style.display = 'none'; src.style.display = 'block'; src.value = d.text; }
+}
+
+function updateSeg() {
+  const d = activeDoc();
+  const isSrc = d && d.tab === 'source';
+  $('segPreview').classList.toggle('sel', !isSrc);
+  $('segSource').classList.toggle('sel', !!isSrc);
 }
 
 function render() {
   const d = activeDoc();
   $('right').style.display = d ? '' : 'none';
-  renderTabs(); renderToc(); renderPreview();
+  renderTabs(); renderToc(); updateSeg(); renderPreview();
   $('searchbar').style.display = (d && state.search.visible) ? '' : 'none';
 }
 
