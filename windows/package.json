@@ -1,0 +1,12 @@
+{
+  "name": "imd-windows",
+  "version": "1.4.0",
+  "private": true,
+  "scripts": {
+    "tauri": "tauri",
+    "copy-shared": "node copy-shared.js"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.0.0"
+  }
+}

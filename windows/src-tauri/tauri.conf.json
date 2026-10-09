@@ -1,0 +1,23 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "imd",
+  "version": "1.4.0",
+  "identifier": "local.imd",
+  "build": {
+    "frontendDist": "../src",
+    "beforeBuildCommand": "node copy-shared.js"
+  },
+  "app": {
+    "withGlobalTauri": true,
+    "windows": [
+      { "title": "imd", "width": 900, "height": 560, "minWidth": 700, "minHeight": 460, "resizable": true }
+    ],
+    "security": { "csp": null }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["msi", "nsis"],
+    "icon": ["icons/icon.png"],
+    "publisher": "Thinking"
+  }
+}
