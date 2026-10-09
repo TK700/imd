@@ -29,10 +29,18 @@ async function loadL10n() {
 const t = (k) => state.l10n[k] ?? k;
 
 function parseHeadings(text) {
-  const re = /^(#{1,6})\s+(.+?)\s*#*$/gm;
+  const lines = text.split('\n');
   const out = [];
-  let m;
-  while ((m = re.exec(text)) !== null) out.push({ level: m[1].length, title: m[2] });
+  let inFence = false, offset = 0;
+  for (const line of lines) {
+    const t = line.trim();
+    if (t.startsWith('```') || t.startsWith('~~~')) inFence = !inFence;
+    else if (!inFence) {
+      const m = /^(#{1,6})\s+(.+?)\s*#*$/.exec(line);
+      if (m) out.push({ level: m[1].length, title: m[2], offset });
+    }
+    offset += line.length + 1;
+  }
   return out;
 }
 
@@ -126,12 +134,18 @@ function renderToc() {
 
 function jumpHeading(h) {
   const d = activeDoc(); if (!d) return;
-  const heads = parseHeadings(d.text);
-  const idx = heads.indexOf(h);
-  if (d.tab === 'preview') scrollToMark ? null : null; // noop
-  // scroll preview heading
-  const hs = document.querySelectorAll('#content h1,h2,h3,h4,h5,h6');
-  if (hs[idx]) hs[idx].scrollIntoView({ behavior: 'smooth', block: 'start' });
+  if (d.tab === 'source') {
+    const src = $('sourcePane');
+    src.focus();
+    src.setSelectionRange(h.offset, h.offset);
+    const line = d.text.slice(0, h.offset).split('\n').length - 1;
+    const lh = parseFloat(getComputedStyle(src).lineHeight) || 20;
+    src.scrollTop = Math.max(0, line * lh - 40);
+  } else {
+    const idx = parseHeadings(d.text).findIndex(x => x.offset === h.offset);
+    const hs = document.querySelectorAll('#content h1,h2,h3,h4,h5,h6');
+    if (hs[idx]) hs[idx].scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }
 }
 
 function renderPreview() {
