@@ -1,7 +1,7 @@
 // Copy shared assets into the static frontend dir before Tauri build.
 const fs = require('fs');
 const path = require('path');
-const root = path.resolve(__dirname, '..', '..');
+const root = path.resolve(__dirname, '..');
 const src = path.join(root, 'shared');
 const dest = path.join(__dirname, 'src');
 
