@@ -4,7 +4,7 @@ marked.use({ extensions: [{
   level: 'inline',
   start: function(src){ var i = src.indexOf('=='); return i === -1 ? undefined : i; },
   tokenizer: function(src){
-    var m = /^==([^=\\n]+)==/.exec(src);
+    var m = /^==([^=\n]+)==/.exec(src);
     if (m) { return { type: 'imdHl', raw: m[0], tokens: this.lexer.inlineTokens(m[1]) }; }
   },
   renderer: function(tok){ return '<mark class="imd-mark">' + this.parser.parseInline(tok.tokens) + '</mark>'; }
@@ -13,11 +13,11 @@ function imdEsc(s){ return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(
 function renderMd(md){
   var el=document.getElementById('content');
   try {
-    md = md.replace(/\\$\\$([\\s\\S]+?)\\$\\$/g, function(m,c){ return '\\n<div class="imd-math-block">'+imdEsc(c.trim())+'</div>\\n'; });
-    md = md.replace(/\\$([^$\\n]+)\\$/g, function(m,c){ return '<span class="imd-math">'+imdEsc(c)+'</span>'; });
+    md = md.replace(/\$\$([\s\S]+?)\$\$/g, function(m,c){ return '\n<div class="imd-math-block">'+imdEsc(c.trim())+'</div>\n'; });
+    md = md.replace(/\$([^$\n]+)\$/g, function(m,c){ return '<span class="imd-math">'+imdEsc(c)+'</span>'; });
     var defs={}; var order=[];
-    md = md.replace(/^\\[\\^([^\\]]+)\\]:\\s*(.+)$/gm, function(m,id,txt){ defs[id]=txt; return ''; });
-    md = md.replace(/\\[\\^([^\\]]+)\\]/g, function(m,id){
+    md = md.replace(/^\[\^([^\]]+)\]:\s*(.+)$/gm, function(m,id,txt){ defs[id]=txt; return ''; });
+    md = md.replace(/\[\^([^\]]+)\]/g, function(m,id){
       if(!(id in defs)) return m;
       var i=order.indexOf(id); if(i===-1){ order.push(id); i=order.length-1; }
       return '<sup id="imd-fnref-'+i+'" class="imd-fnref"><a href="#imd-fn-'+i+'">['+(i+1)+']</a></sup>';
