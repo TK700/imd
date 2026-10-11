@@ -180,9 +180,16 @@ function renderPreview() {
   const d = activeDoc();
   const pv = $('previewPane'), src = $('sourcePane');
   if (!d) { pv.style.display = 'none'; src.style.display = 'none'; return; }
-  if (d.isTxt) { pv.style.display = 'none'; src.style.display = 'block'; src.value = d.text; return; }
-  if (d.tab === 'preview') { pv.style.display = 'block'; src.style.display = 'none'; renderMd(d.text); applySearch(); }
-  else { pv.style.display = 'none'; src.style.display = 'block'; src.value = d.text; }
+  if (d.isTxt) { pv.style.display = 'none'; src.style.display = 'block'; if (src.value !== d.text) src.value = d.text; if (d._srcScroll != null) src.scrollTop = d._srcScroll; return; }
+  if (d.tab === 'preview') {
+    pv.style.display = 'block'; src.style.display = 'none';
+    if (d._renderedText !== d.text) { renderMd(d.text); d._renderedText = d.text; applySearch(); }
+    else if (d._pvScroll != null) pv.scrollTop = d._pvScroll;
+  } else {
+    pv.style.display = 'none'; src.style.display = 'block';
+    if (src.value !== d.text) src.value = d.text;
+    if (d._srcScroll != null) src.scrollTop = d._srcScroll;
+  }
 }
 
 function updateSeg() {
@@ -355,6 +362,8 @@ document.addEventListener('drop', (e) => e.preventDefault());
 
 // events
 $('sourcePane').addEventListener('input', (e) => { setText(e.target.value); updateSnip(false); });
+$('previewPane').addEventListener('scroll', () => { const d = activeDoc(); if (d && d.tab === 'preview') d._pvScroll = $('previewPane').scrollTop; });
+$('sourcePane').addEventListener('scroll', () => { const d = activeDoc(); if (d && d.tab === 'source') d._srcScroll = $('sourcePane').scrollTop; });
 $('segPreview').onclick = () => { const d = activeDoc(); if (d) { d.tab = 'preview'; render(); } };
 $('segSource').onclick = () => { const d = activeDoc(); if (d) { d.tab = 'source'; render(); } };
 $('tocBtn').onclick = () => { const d = activeDoc(); if (d) { d.tocHidden = !d.tocHidden; renderToc(); } };

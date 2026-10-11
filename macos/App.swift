@@ -48,6 +48,9 @@ struct MDDoc: Identifiable {
     var blocks: [Block] = []
     var name: String { fileURL?.lastPathComponent ?? NSLocalizedString(isTxt ? "untitledTxt" : "untitledMd", comment: "") }
     var tocHidden: Bool = false
+    var tab: ActiveTab = .preview
+    var pvScroll: Double = 0
+    var srcScroll: Double = 0
 }
 
 // MARK: - Multi-window globals
@@ -158,6 +161,10 @@ final class EditorController: ObservableObject {
 
     var activeDoc: MDDoc? {
         docs.indices.contains(active) ? docs[active] : nil
+    }
+    func setActiveTab(_ t: ActiveTab) {
+        guard docs.indices.contains(active) else { return }
+        docs[active].tab = t
     }
     var activeText: String { activeDoc?.text ?? "" }
     var activeHeadings: [Heading] { activeDoc?.headings ?? [] }
@@ -583,6 +590,7 @@ struct PreviewView: NSViewRepresentable {
     func makeNSView(context: Context) -> WKWebView {
         let cfg = WKWebViewConfiguration()
         cfg.userContentController.add(context.coordinator, name: "taskToggle")
+        cfg.userContentController.add(context.coordinator, name: "pvScroll")
         let web = WKWebView(frame: .zero, configuration: cfg)
         web.unregisterDraggedTypes()
         web.navigationDelegate = context.coordinator
@@ -595,9 +603,15 @@ struct PreviewView: NSViewRepresentable {
         let c = context.coordinator
         if c.ready {
             var needApply = false
+            let curID = controller.activeDoc?.id
             if c.lastText != text {
                 c.lastText = text
                 web.evaluateJavaScript("renderMd(\(jsString(text)))")
+                if let cid = curID {
+                    let y = c.scrollByDoc[cid] ?? 0
+                    web.evaluateJavaScript("window.scrollTo(0, \(y))")
+                }
+                c.lastDocID = curID
                 needApply = true
             }
             let term = controller.showSearch ? controller.searchText : ""
@@ -637,6 +651,8 @@ struct PreviewView: NSViewRepresentable {
         var lastTerm: String? = nil
         var lastCase: Bool? = nil
         var lastShow: Bool? = nil
+        var scrollByDoc: [UUID: Double] = [:]
+        var lastDocID: UUID? = nil
 
         init(controller: EditorController) { self.controller = controller }
 
@@ -650,6 +666,13 @@ struct PreviewView: NSViewRepresentable {
         }
 
         func userContentController(_ uc: WKUserContentController, didReceive msg: WKScriptMessage) {
+            if msg.name == "pvScroll",
+               let body = msg.body as? [String: Any],
+               let y = body["y"] as? Double,
+               let id = controller.activeDoc?.id {
+                scrollByDoc[id] = y
+                return
+            }
             guard msg.name == "taskToggle",
                   let body = msg.body as? [String: Any],
                   let idx = body["index"] as? Int,
@@ -840,19 +863,34 @@ struct SourceEditor: NSViewRepresentable {
         tv.delegate = context.coordinator
         context.coordinator.textView = tv
         tv.string = text
+        NotificationCenter.default.addObserver(context.coordinator, selector: #selector(SourceEditor.Coordinator.boundsChanged), name: NSView.boundsDidChangeNotification, object: scroll.contentView)
         return scroll
     }
 
     func updateNSView(_ nsView: NSScrollView, context: Context) {
         guard let tv = context.coordinator.textView else { return }
         let composing = tv.hasMarkedText()
+        let curID = controller.activeDoc?.id
         if !composing, tv.string != text {
+            context.coordinator.suppressSave = true
             let sel = tv.selectedRange()
             tv.string = text
             let len = (text as NSString).length
             let loc = min(sel.location, len)
             tv.setSelectedRange(NSRange(location: loc, length: min(sel.length, len - loc)))
             context.coordinator.panel.hide()
+            if curID != context.coordinator.lastDocID {
+                context.coordinator.lastDocID = curID
+                if let cid = curID, let y = context.coordinator.scrollByDoc[cid] {
+                    if let lm = tv.layoutManager, let tc = tv.textContainer {
+                        lm.ensureLayout(for: tc)
+                    }
+                    nsView.contentView.setBoundsOrigin(NSPoint(x: 0, y: y))
+                }
+            }
+            context.coordinator.suppressSave = false
+        } else if curID != context.coordinator.lastDocID {
+            context.coordinator.lastDocID = curID
         }
         if let req = controller.scrollRequest,
            context.coordinator.lastScrollID != req.id,
@@ -903,6 +941,16 @@ struct SourceEditor: NSViewRepresentable {
         let panel = SnippetPanel()
         private var mouseMonitor: Any?
         private var bag = Set<AnyCancellable>()
+        var scrollByDoc: [UUID: CGFloat] = [:]
+        var lastDocID: UUID? = nil
+        var suppressSave: Bool = false
+
+        @objc func boundsChanged() {
+            guard !suppressSave else { return }
+            guard let tv = textView, let scroll = tv.enclosingScrollView else { return }
+            let y = scroll.contentView.documentVisibleRect.origin.y
+            if let id = controller.activeDoc?.id { scrollByDoc[id] = y }
+        }
 
         init(controller: EditorController, text: Binding<String>, md: Bool) {
             self.controller = controller
@@ -922,6 +970,7 @@ struct SourceEditor: NSViewRepresentable {
 
         deinit {
             if let m = mouseMonitor { NSEvent.removeMonitor(m) }
+            NotificationCenter.default.removeObserver(self)
         }
 
         func refreshHighlights() {
@@ -1205,8 +1254,12 @@ struct SearchBar: View {
 struct ContentView: View {
     @StateObject private var controller = EditorController()
     @ObservedObject private var dragState = DragState.shared
-    @State private var tab: ActiveTab = .preview
     @State private var dragOver = false
+
+    private var tab: ActiveTab { controller.activeDoc?.tab ?? .preview }
+    private var tabBinding: Binding<ActiveTab> {
+        Binding(get: { tab }, set: { controller.setActiveTab($0) })
+    }
 
 
     private var textBinding: Binding<String> {
@@ -1262,7 +1315,7 @@ struct ContentView: View {
 
             VStack(spacing: 0) {
                 ZStack {
-                    Picker("", selection: $tab) {
+                    Picker("", selection: tabBinding) {
                         Text("preview").tag(ActiveTab.preview)
                         Text("source").tag(ActiveTab.source)
                     }
@@ -1288,9 +1341,13 @@ struct ContentView: View {
 
                 Divider()
 
-                switch tab {
-                case .preview: PreviewView(text: controller.activeText)
-                case .source: SourceEditor(text: textBinding, monospaced: true)
+                ZStack {
+                    PreviewView(text: controller.activeText)
+                        .opacity(tab == .preview ? 1 : 0)
+                        .allowsHitTesting(tab == .preview)
+                    SourceEditor(text: textBinding, monospaced: true)
+                        .opacity(tab == .source ? 1 : 0)
+                        .allowsHitTesting(tab == .source)
                 }
             }
             .frame(minWidth: 480)
@@ -1342,7 +1399,7 @@ struct ContentView: View {
         }
         .onChange(of: controller.requestedTab) { req in
             if let req = req {
-                tab = req
+                controller.setActiveTab(req)
                 controller.requestedTab = nil
             }
         }

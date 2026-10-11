@@ -26,7 +26,7 @@
 ## 安装
 
 ### macOS
-1. Releases 下载 `imd-1.5.3.dmg`
+1. Releases 下载 `imd-1.5.4.dmg`
 2. 双击挂载，拖 `imd` 到 `Applications`
 3. 首次若被拦：右键 `imd.app` → 打开，或 `xattr -cr /Applications/imd.app`
 

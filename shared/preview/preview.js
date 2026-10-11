@@ -94,3 +94,18 @@ function scrollToMark(i){
   return ms.length;
 }
 
+
+// report preview scroll to native (mac WKWebView) so per-doc position can be saved/restored
+(function(){
+  var t = null;
+  window.addEventListener('scroll', function(){
+    if (t) return;
+    t = setTimeout(function(){
+      t = null;
+      try {
+        var h = window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.pvScroll;
+        if (h) h.postMessage({ y: window.scrollY || window.pageYOffset || 0 });
+      } catch (e) {}
+    }, 80);
+  }, { passive: true });
+})();
